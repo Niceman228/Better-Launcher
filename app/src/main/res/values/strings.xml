@@ -1,6 +1,6 @@
 <resources>
-    <string name="app_name">ИLauncher</string>
-    <string name="accessibility_service_label">ИLauncher</string>
+    <string name="app_name">BИLauncher</string>
+    <string name="accessibility_service_label">BИLauncher</string>
     <string name="accessibility_service_summary">Расширенные функции блокировки</string>
     <string name="accessibility_service_description">ИLauncher использует службу специальных возможностей для:\n\n• Расширенной блокировки системных элементов\n• Блокировки сенсора экрана в скрытом режиме\n• Перехвата комбинаций клавиш\n• Блокировки кнопок громкости\n• Управления навигацией\n\nВНИМАНИЕ: Служба может получать доступ к содержимому экрана, но ИLauncher НЕ собирает и НЕ передает личные данные.</string>
     <string name="applications">ПРИЛОЖЕНИЯ</string>

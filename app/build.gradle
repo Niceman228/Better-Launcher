@@ -16,8 +16,8 @@ android {
         // С target >= 29 система блокирует эти API без Shizuku/root.
         // Приложение ставится локально (APK), требования Play Store не применимы.
         targetSdk 28
-        versionCode 48
-        versionName "4.8"
+        versionCode 50
+        versionName "5.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         
@@ -37,18 +37,17 @@ android {
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.debug // Use debug key for testing
-            applicationVariants.all { variant ->
-                variant.outputs.all {
-                    outputFileName = "ИLauncher.apk"
-                }
-            }
         }
         debug {
-            applicationVariants.all { variant ->
-                variant.outputs.all {
-                    outputFileName = "ilauncher-debug.apk"
-                }
-            }
+        }
+    }
+
+    // applicationVariants.all внутри buildTypes применяется ко ВСЕМ вариантам,
+    // поэтому имя задаётся здесь с проверкой типа сборки.
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = variant.buildType.name == "release" ?
+                "BILauncher-release.apk" : "ilauncher-debug.apk"
         }
     }
     
