@@ -129,25 +129,27 @@
             android:imeOptions="actionSearch" />
     </LinearLayout>
     
-    <!-- Apps List (only apps, no extra elements) -->
+    <!-- Apps List: ends above the launch button so no item is ever covered -->
     <com.customlauncher.app.ui.widget.FadingEdgeRecyclerView
         android:id="@+id/appsList"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
         android:paddingTop="5dp"
-        android:paddingBottom="75dp"
+        android:paddingBottom="12dp"
         android:clipToPadding="false"
         app:layout_constraintTop_toBottomOf="@id/searchBar"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/launchButtonContainer"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
-    
+
     <!-- Launch Button with Shadow -->
     <FrameLayout
+        android:id="@+id/launchButtonContainer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:padding="16dp"
+        android:paddingHorizontal="16dp"
+        android:paddingBottom="16dp"
+        android:paddingTop="8dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">

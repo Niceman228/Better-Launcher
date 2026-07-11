@@ -90,11 +90,11 @@ class AppListActivity : AppCompatActivity() {
         binding.appsList.apply {
             layoutManager = LinearLayoutManager(this@AppListActivity)
             adapter = appAdapter
-            
-            // Set custom fade sizes
-            val fadeSize = (30 * resources.displayMetrics.density).toInt()
-            setFadeSizes(fadeSize, fadeSize)
-            
+
+            // Без fade-градиентов: на дисплее F22 они выглядят мутными полосами
+            setFadeSizes(0, 0)
+            isVerticalFadingEdgeEnabled = false
+
             overScrollMode = android.view.View.OVER_SCROLL_NEVER
         }
     }
