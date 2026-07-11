@@ -76,6 +76,13 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // FragmentManager auto-restores this sheet after an activity relaunch and it
+        // comes back as a broken ghost (dim without content) alongside a freshly
+        // created copy. All state lives in the activity, so never restore: dismiss.
+        if (savedInstanceState != null) {
+            dismissAllowingStateLoss()
+            return
+        }
         setStyle(STYLE_NORMAL, R.style.BottomSheetDialogTheme)
     }
 

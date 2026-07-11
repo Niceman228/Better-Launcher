@@ -287,7 +287,13 @@ class HomeScreenActivity : AppCompatActivity() {
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
+        // A drawer sheet restored from a previous activity instance is always a ghost
+        // (see AppDrawerBottomSheet.onCreate). Drop it before anything else runs.
+        (supportFragmentManager.findFragmentByTag("AppDrawerBottomSheet")
+            as? androidx.fragment.app.DialogFragment)?.dismissAllowingStateLoss()
+        isAppDrawerOpen = false
+
         binding = ActivityHomeScreenBinding.inflate(layoutInflater)
         setContentView(binding.root)
         
