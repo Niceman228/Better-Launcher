@@ -1,18 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
-    
-    <!-- Focused state - yellow highlight -->
-    <item android:state_focused="true"
-          android:drawable="@drawable/bg_item_focused" />
-    
-    <!-- Selected state - also use yellow highlight -->
-    <item android:state_selected="true"
-          android:drawable="@drawable/bg_item_focused" />
-    
-    <!-- Pressed state - slightly darker yellow -->
+
+    <!-- Pressed state - slightly brighter highlight.
+         Colors are opaque (pre-blended over @color/background_dark #212121):
+         no alpha blending = no dirty edges at rounded corners and less GPU work. -->
     <item android:state_pressed="true">
         <shape android:shape="rectangle">
-            <solid android:color="#A0FFD700" /> <!-- 63% transparent yellow -->
+            <solid android:color="#FFAC930C" />
             <corners android:radius="12dp" />
             <stroke
                 android:width="2dp"
@@ -24,8 +18,16 @@
                 android:bottom="4dp" />
         </shape>
     </item>
-    
+
+    <!-- Selected state (D-pad navigation) - yellow highlight -->
+    <item android:state_selected="true"
+          android:drawable="@drawable/bg_item_focused" />
+
+    <!-- Focused state - same highlight (kept for safety, items are not focusable) -->
+    <item android:state_focused="true"
+          android:drawable="@drawable/bg_item_focused" />
+
     <!-- Default state - transparent -->
     <item android:drawable="@drawable/bg_item_normal" />
-    
+
 </selector>

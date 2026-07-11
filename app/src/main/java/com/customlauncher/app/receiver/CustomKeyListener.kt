@@ -2,6 +2,7 @@ package com.customlauncher.app.receiver
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
 import com.customlauncher.app.data.model.CustomKeyCombination
@@ -14,10 +15,11 @@ class CustomKeyListener(
     private val handler = Handler(Looper.getMainLooper())
     private val resetRunnable = Runnable { reset() }
     private var isProcessing = false
+    private var lastMatchTime = 0L
     
     companion object {
         private const val TAG = "CustomKeyListener"
-        private const val TIMEOUT_MS = 2000L
+        private const val SUCCESS_COOLDOWN_MS = 700L
     }
     
     fun setCombination(combination: CustomKeyCombination?) {
@@ -25,7 +27,24 @@ class CustomKeyListener(
         reset()
     }
     
+    fun onKeyEvent(event: KeyEvent): Boolean {
+        if (event.action != KeyEvent.ACTION_DOWN) {
+            return false
+        }
+
+        if (event.repeatCount > 0) {
+            Log.d(TAG, "Ignoring repeated key event: ${event.keyCode}, repeat=${event.repeatCount}")
+            return false
+        }
+
+        return onKeyCode(event.keyCode)
+    }
+
     fun onKeyEvent(keyCode: Int): Boolean {
+        return onKeyCode(keyCode)
+    }
+
+    private fun onKeyCode(keyCode: Int): Boolean {
         Log.d(TAG, "onKeyEvent called with keyCode: $keyCode")
         val combination = targetCombination
         if (combination == null) {
@@ -42,15 +61,26 @@ class CustomKeyListener(
         
         // Check if sequence matches
         if (keySequence == combination.keys) {
-            Log.d(TAG, "🎯 MATCH! Custom combination detected!")
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastMatchTime < SUCCESS_COOLDOWN_MS) {
+                Log.d(TAG, "Combination matched inside cooldown, ignoring duplicate")
+                reset()
+                return false
+            }
+            lastMatchTime = now
+
+            Log.d(TAG, "Custom combination detected")
             if (!isProcessing) {
                 isProcessing = true
                 Log.d(TAG, "Triggering callback in 50ms...")
                 // Trigger combination after a small delay to let the key event complete
                 handler.postDelayed({
-                    Log.d(TAG, "Executing onCombinationDetected callback")
-                    onCombinationDetected()
-                    isProcessing = false
+                    try {
+                        Log.d(TAG, "Executing onCombinationDetected callback")
+                        onCombinationDetected()
+                    } finally {
+                        isProcessing = false
+                    }
                 }, 50) // Small delay to ensure key event is processed
             } else {
                 Log.d(TAG, "Already processing, skipping...")

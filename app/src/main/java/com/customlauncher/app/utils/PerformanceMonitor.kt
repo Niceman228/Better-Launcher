@@ -54,7 +54,11 @@ object PerformanceMonitor {
                 memoryCheckHandler?.postDelayed(this, intervalMs)
             }
         }
-        memoryCheckHandler?.post(memoryCheckRunnable!!)
+        val handler = memoryCheckHandler
+        val runnable = memoryCheckRunnable
+        if (handler != null && runnable != null) {
+            handler.post(runnable)
+        }
         
         Log.d(TAG, "Started memory monitoring with ${intervalMs}ms interval")
     }

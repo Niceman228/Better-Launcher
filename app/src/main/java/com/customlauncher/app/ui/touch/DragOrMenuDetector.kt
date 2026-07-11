@@ -45,7 +45,7 @@ class DragOrMenuDetector(
                         longPressScheduled = false
                     }
                 }
-                handler.postDelayed(longPressRunnable!!, longPressTimeout)
+                longPressRunnable?.let { handler.postDelayed(it, longPressTimeout) }
                 
                 // Don't consume - allow click listener to work
                 return false

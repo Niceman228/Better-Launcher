@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
@@ -11,11 +12,17 @@ import android.util.LruCache
 import com.customlauncher.app.LauncherApplication
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.io.File
+import java.io.FileOutputStream
+import java.security.MessageDigest
+import com.customlauncher.app.data.model.AppInfo
 
 object IconCache {
     // Cache size - adaptive based on available memory
     private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
-    private val cacheSize = maxMemory / 6 // Use 1/6th of available memory for better performance
+    private val cacheSize = (maxMemory / 8).coerceIn(8 * 1024, 24 * 1024)
     
     // Two-level cache: memory cache for fast access
     private val memoryCache = object : LruCache<String, Bitmap>(cacheSize) {
@@ -25,15 +32,19 @@ object IconCache {
         }
         
         override fun entryRemoved(evicted: Boolean, key: String, oldValue: Bitmap, newValue: Bitmap?) {
-            if (evicted) {
-                android.util.Log.d("IconCache", "Evicted icon from cache: $key")
-            }
+            // Evictions are expected on low-memory devices; avoid log spam during scrolling.
         }
     }
     
     // Track cache statistics
     private var cacheHits = 0
     private var cacheMisses = 0
+    // MT6739 has four slow A53 cores. Two decoders avoid an IPC/CPU stampede while
+    // leaving headroom for UI, system_server and launcher services.
+    private val loadSlots = Semaphore(2)
+    private val inFlight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Bitmap>>()
+    @Volatile private var iconPackManager: IconPackManager? = null
+    private val startupPreloadReady = kotlinx.coroutines.CompletableDeferred<Unit>()
     
     fun getCachedIcon(cacheKey: String): Bitmap? {
         val bitmap = memoryCache.get(cacheKey)
@@ -48,6 +59,56 @@ object IconCache {
     fun putIcon(cacheKey: String, icon: Bitmap) {
         memoryCache.put(cacheKey, icon)
     }
+
+    fun getIconNow(
+        context: Context,
+        app: AppInfo,
+        targetSizePx: Int
+    ): Drawable? {
+        val key = buildCacheKey(app.packageName, app.componentName, targetSizePx, app.packageFingerprint)
+        return memoryCache.get(key)?.let { BitmapDrawable(context.resources, it) }
+    }
+
+    /** Decode persisted icons before drawer opens. Existing apps then bind with no job or UI update. */
+    suspend fun preload(context: Context, apps: List<AppInfo>, targetSizes: Set<Int>) = withContext(Dispatchers.IO) {
+        var loaded = 0
+        for (app in apps) for (size in targetSizes) {
+            val key = buildCacheKey(app.packageName, app.componentName, size, app.packageFingerprint)
+            if (memoryCache.get(key) != null) continue
+            val persistent = persistentFile(context, key)
+            val legacy = legacyFile(context, key)
+            val source = when {
+                persistent.exists() -> persistent
+                legacy.exists() -> legacy
+                else -> null
+            } ?: continue
+            BitmapFactory.decodeFile(source.path)?.let { bitmap ->
+                bitmap.prepareToDraw()
+                putIcon(key, bitmap)
+                loaded++
+                if (source == legacy) runCatching {
+                    persistent.parentFile?.mkdirs()
+                    source.copyTo(persistent, overwrite = true)
+                    source.delete()
+                }
+            }
+        }
+        android.util.Log.d("AppCatalogPerf", "icon-preload loaded=$loaded memory=${memoryCache.size()}KB")
+    }
+
+    suspend fun preloadForStartup(context: Context, apps: List<AppInfo>, targetSizes: Set<Int>) {
+        try {
+            preload(context, apps, targetSizes)
+        } finally {
+            startupPreloadReady.complete(Unit)
+        }
+    }
+
+    suspend fun awaitStartupPreload() {
+        startupPreloadReady.await()
+    }
+
+    fun isStartupPreloadComplete(): Boolean = startupPreloadReady.isCompleted
     
     /**
      * Get cache statistics for debugging
@@ -73,56 +134,83 @@ object IconCache {
         context: Context,
         packageName: String,
         packageManager: PackageManager,
-        componentName: ComponentName? = null
+        componentName: ComponentName? = null,
+        targetSizePx: Int = 96,
+        packageFingerprint: Long = 0L
     ): Drawable = withContext(Dispatchers.IO) {
         try {
             // Generate cache key including icon pack
+            val componentKey = componentName?.flattenToShortString() ?: packageName
             val iconPackPackage = LauncherApplication.instance.preferences.iconPackPackageName
-            val cacheKey = if (iconPackPackage != null) {
-                "$packageName:$iconPackPackage"
-            } else {
-                packageName
-            }
+            val cacheKey = buildCacheKey(packageName, componentKey, targetSizePx, packageFingerprint)
             
             // Check cache first
             val cached = getCachedIcon(cacheKey)
             if (cached != null) {
                 return@withContext BitmapDrawable(context.resources, cached)
             }
-            
-            var drawable: Drawable? = null
-            
-            // Try to load from icon pack first
-            if (iconPackPackage != null && componentName != null) {
-                val iconPackManager = IconPackManager(context)
-                drawable = iconPackManager.getIconFromPack(iconPackPackage, componentName)
+
+            val diskFile = persistentFile(context, cacheKey)
+            val legacyFile = legacyFile(context, cacheKey)
+            BitmapFactory.decodeFile(diskFile.path)?.let {
+                it.prepareToDraw()
+                putIcon(cacheKey, it)
+                return@withContext BitmapDrawable(context.resources, it)
             }
+            BitmapFactory.decodeFile(legacyFile.path)?.let {
+                it.prepareToDraw()
+                putIcon(cacheKey, it)
+                runCatching { diskFile.parentFile?.mkdirs(); legacyFile.copyTo(diskFile, true); legacyFile.delete() }
+                return@withContext BitmapDrawable(context.resources, it)
+            }
+
+            val mine = kotlinx.coroutines.CompletableDeferred<Bitmap>()
+            val existing = inFlight.putIfAbsent(cacheKey, mine)
+            if (existing != null) {
+                return@withContext BitmapDrawable(context.resources, existing.await())
+            }
+
+            try {
+                val bitmap = loadSlots.withPermit {
+                    var drawable: Drawable? = null
+
+                    if (iconPackPackage != null && componentName != null) {
+                        val manager = iconPackManager ?: synchronized(this@IconCache) {
+                            iconPackManager ?: IconPackManager(context.applicationContext).also { iconPackManager = it }
+                        }
+                        drawable = manager.getIconFromPack(iconPackPackage, componentName)
+                    }
             
             // Fall back to system icon
-            if (drawable == null) {
-                val appInfo = packageManager.getApplicationInfo(packageName, 0)
-                drawable = packageManager.getApplicationIcon(appInfo)
-            }
+                    if (drawable == null) {
+                        val appInfo = packageManager.getApplicationInfo(packageName, 0)
+                        drawable = packageManager.getApplicationIcon(appInfo)
+                    }
             
             // Convert to bitmap and cache
-            val bitmap = drawableToBitmap(drawable)
-            putIcon(cacheKey, bitmap)
-            
-            drawable
+                    drawableToBitmap(drawable, targetSizePx)
+                }
+                putIcon(cacheKey, bitmap)
+                bitmap.prepareToDraw()
+                runCatching { FileOutputStream(diskFile).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+                mine.complete(bitmap)
+                BitmapDrawable(context.resources, bitmap)
+            } catch (t: Throwable) {
+                mine.completeExceptionally(t)
+                throw t
+            } finally {
+                inFlight.remove(cacheKey, mine)
+            }
         } catch (e: Exception) {
             // Return default icon on error
             context.packageManager.defaultActivityIcon
         }
     }
     
-    private fun drawableToBitmap(drawable: Drawable): Bitmap {
-        if (drawable is BitmapDrawable) {
-            return drawable.bitmap
-        }
-        
+    private fun drawableToBitmap(drawable: Drawable, size: Int): Bitmap {
+        val target = size.coerceAtLeast(1)
         val bitmap = Bitmap.createBitmap(
-            drawable.intrinsicWidth.coerceAtLeast(1),
-            drawable.intrinsicHeight.coerceAtLeast(1),
+            target, target,
             Bitmap.Config.ARGB_8888
         )
         
@@ -132,6 +220,26 @@ object IconCache {
         
         return bitmap
     }
+
+    private fun hash(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+
+    private fun buildCacheKey(
+        packageName: String,
+        component: String?,
+        size: Int,
+        fingerprint: Long
+    ): String {
+        val normalized = component?.let(ComponentName::unflattenFromString)?.flattenToShortString()
+            ?: component ?: packageName
+        return "$normalized:${LauncherApplication.instance.preferences.iconPackPackageName.orEmpty()}:$size:$fingerprint"
+    }
+
+    private fun persistentFile(context: Context, key: String) =
+        File(File(context.filesDir, "app_icons").apply { mkdirs() }, hash(key) + ".png")
+
+    private fun legacyFile(context: Context, key: String) =
+        File(File(context.cacheDir, "app_icons"), hash(key) + ".png")
     
     fun clear() {
         memoryCache.evictAll()

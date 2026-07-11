@@ -51,6 +51,7 @@ import com.customlauncher.app.ui.widget.WidgetResizeManager
 import com.customlauncher.app.ui.widget.MenuButtonWidget
 import com.customlauncher.app.ui.widget.PhoneButtonWidget
 import com.customlauncher.app.utils.IconCache
+import com.customlauncher.app.utils.SystemBarsController
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -70,6 +71,7 @@ class HomeScreenActivity : AppCompatActivity() {
     private lateinit var focusManager: GridFocusManager
     private var customKeyListener: CustomKeyListener? = null
     private var isLoadingItems = false
+    private var pendingHomeReload = false
     private var previousHiddenState: Boolean? = null // Flag to prevent concurrent loading
     private var currentPopupWindow: PopupWindow? = null
     private var lastPackageChangeTime = 0L
@@ -77,6 +79,7 @@ class HomeScreenActivity : AppCompatActivity() {
     private var lastHiddenState: Boolean? = null
     private var lastUpdateTime = 0L
     private var isAppDrawerOpen = false // Prevent multiple drawer instances
+    private var cachedHomeItems: List<HomeItemModel> = emptyList()
     
     // Track settings for change detection
     private var lastGridColumnCount: Int = 0
@@ -112,6 +115,7 @@ class HomeScreenActivity : AppCompatActivity() {
                 // Don't trust the broadcast extras as they might be outdated
                 val actualState = HiddenModeStateManager.currentState
                 Log.d(TAG, "Hidden mode broadcast received, using actual state: $actualState")
+                SystemBarsController.applyHiddenMode(this@HomeScreenActivity, actualState)
                 updateVisibility(actualState)
             }
         }
@@ -206,7 +210,6 @@ class HomeScreenActivity : AppCompatActivity() {
                             
                             // Force layout update
                             gridLayout.requestLayout()
-                            gridLayout.invalidate()
                             
                             // Update visibility will handle loading items
                             updateVisibility()
@@ -231,15 +234,15 @@ class HomeScreenActivity : AppCompatActivity() {
     // BroadcastReceiver for package changes (install/uninstall)
     private val packageChangeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            val action = intent?.action
-            val packageName = intent?.data?.schemeSpecificPart
+            val action = intent?.getStringExtra("action") ?: intent?.action
+            val packageName = intent?.getStringExtra("package") ?: intent?.data?.schemeSpecificPart
             
             Log.d(TAG, "Package change detected: $action for $packageName")
             
             when (action) {
                 Intent.ACTION_PACKAGE_REMOVED -> {
                     // Check if package is being replaced
-                    val replacing = intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)
+                    val replacing = intent?.getBooleanExtra(Intent.EXTRA_REPLACING, false) ?: false
                     if (!replacing) {
                         packageName?.let { pkg ->
                             Log.d(TAG, "Package removed: $pkg, updating UI")
@@ -264,7 +267,7 @@ class HomeScreenActivity : AppCompatActivity() {
                     }
                 }
                 Intent.ACTION_PACKAGE_ADDED -> {
-                    val replacing = intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)
+                    val replacing = intent?.getBooleanExtra(Intent.EXTRA_REPLACING, false) ?: false
                     if (!replacing) {
                         Log.d(TAG, "Package added: $packageName, reloading items")
                         loadHomeScreenItems()
@@ -318,6 +321,17 @@ class HomeScreenActivity : AppCompatActivity() {
                 updateVisibility() // This will also call loadHomeScreenItems
             }
         }
+
+        // Прогреваем кэш списка приложений в фоне: первое открытие меню
+        // не ждёт queryIntentActivities + loadLabel по всем пакетам.
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                LauncherApplication.instance.repository.getAllInstalledApps()
+                Log.d(TAG, "App list cache warmed up")
+            } catch (e: Exception) {
+                Log.w(TAG, "App list warm-up failed", e)
+            }
+        }
         
         // Check if home screen is disabled and show apps menu directly
         if (!preferences.showHomeScreen && !isDefaultLauncher()) {
@@ -355,6 +369,8 @@ class HomeScreenActivity : AppCompatActivity() {
             statusBarColor = android.graphics.Color.TRANSPARENT
             navigationBarColor = android.graphics.Color.TRANSPARENT
         }
+
+        SystemBarsController.applyHiddenMode(this, HiddenModeStateManager.currentState)
     }
     
     private fun setupGestureDetector() {
@@ -686,19 +702,11 @@ class HomeScreenActivity : AppCompatActivity() {
             registerReceiver(homeScreenVisibilityReceiver, homeScreenVisibilityFilter)
         }
         
-        // Register package change receiver - directly register system events for Android 16 compatibility
-        val packageFilter = IntentFilter().apply {
-            addAction(Intent.ACTION_PACKAGE_REMOVED)
-            addAction(Intent.ACTION_PACKAGE_ADDED)
-            addAction(Intent.ACTION_PACKAGE_REPLACED)
-            addAction(Intent.ACTION_PACKAGE_CHANGED)
-            addDataScheme("package")
-        }
+        // Application owns system package broadcasts; activities consume one internal event.
+        val packageFilter = IntentFilter("com.customlauncher.PACKAGE_CHANGED")
         
         // Use RECEIVER_EXPORTED for Android 16 to ensure we receive system broadcasts
-        if (Build.VERSION.SDK_INT >= 34) { // Android 14+
-            registerReceiver(packageChangeReceiver, packageFilter, Context.RECEIVER_EXPORTED)
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(packageChangeReceiver, packageFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             registerReceiver(packageChangeReceiver, packageFilter)
@@ -873,13 +881,12 @@ class HomeScreenActivity : AppCompatActivity() {
             // Always reload items when visibility changes to ensure correct filtering
             // Use Main context to avoid concurrent modification
             withContext(Dispatchers.Main) {
-                loadHomeScreenItems()
+                if (cachedHomeItems.isNotEmpty()) applyCachedHomeVisibility() else loadHomeScreenItems()
                 
                 // Force UI refresh on Android 16+ only once
                 if (Build.VERSION.SDK_INT >= 35) {
                     binding.gridContainer.post {
                         binding.gridContainer.requestLayout()
-                        binding.gridContainer.invalidate()
                     }
                 }
             }
@@ -887,23 +894,31 @@ class HomeScreenActivity : AppCompatActivity() {
     }
     
     private fun openAppDrawer() {
+        val existingDialog = supportFragmentManager.findFragmentByTag("AppDrawerBottomSheet")
+            as? com.customlauncher.app.ui.dialog.AppDrawerBottomSheet
+
         // Проверяем, не открыт ли уже drawer
         if (isAppDrawerOpen) {
-            Log.d(TAG, "App drawer is already open, ignoring request")
-            return
+            // Флаг мог застрять, если анимация скрытия не завершилась: прозрачное окно
+            // диалога тогда глотает все клавиши и тачи. Сверяем с реальным состоянием.
+            if (existingDialog?.isShowingOnScreen() == true) {
+                Log.d(TAG, "App drawer is already open, ignoring request")
+                return
+            }
+            Log.w(TAG, "Drawer flagged open but not on screen - self-healing state")
+            isAppDrawerOpen = false
         }
-        
+
         // Debouncing - игнорируем быстрые повторные вызовы
         val currentTime = System.currentTimeMillis()
         if (currentTime - lastDrawerOpenTime < DRAWER_OPEN_DEBOUNCE_MS) {
             Log.d(TAG, "Ignoring rapid drawer open request (debouncing ${DRAWER_OPEN_DEBOUNCE_MS}ms)")
             return
         }
-        
-        // Проверяем, нет ли уже открытого диалога
-        val existingDialog = supportFragmentManager.findFragmentByTag("AppDrawerBottomSheet")
         if (existingDialog != null) {
-            Log.d(TAG, "App drawer dialog already exists, ignoring request")
+            isAppDrawerOpen = true
+            lastDrawerOpenTime = currentTime
+            existingDialog.reopen()
             return
         }
         
@@ -955,7 +970,8 @@ class HomeScreenActivity : AppCompatActivity() {
     private fun loadHomeScreenItems() {
         // Prevent concurrent loading
         if (isLoadingItems) {
-            Log.d(TAG, "Already loading items, skipping duplicate call")
+            pendingHomeReload = true
+            Log.d(TAG, "Already loading items, queued pending reload")
             return
         }
         
@@ -968,52 +984,46 @@ class HomeScreenActivity : AppCompatActivity() {
                     
                     // Filter hidden apps if needed
                     val filteredItems = filterHiddenApps(allItems)
-                    
+
+                    // Check for duplicate positions and remove them off the UI thread.
+                    val positionMap = mutableMapOf<Pair<Int, Int>, MutableList<HomeItemModel>>()
+                    filteredItems.forEach { item ->
+                        val pos = Pair(item.cellX, item.cellY)
+                        positionMap.getOrPut(pos) { mutableListOf() }.add(item)
+                    }
+
+                    val duplicates = positionMap.filter { it.value.size > 1 }
+                    val itemsToRemoveFromDb = mutableListOf<HomeItemModel>()
+                    val cleanedItems = mutableListOf<HomeItemModel>()
+
+                    if (duplicates.isNotEmpty()) {
+                        Log.w(TAG, "Found duplicate positions in loaded items, removing duplicates:")
+                        duplicates.forEach { (pos, items) ->
+                            Log.w(TAG, "  Position ${pos.first},${pos.second}: ${items.map { "${it.id}(${it.packageName})" }.joinToString(", ")}")
+                            val sortedItems = items.sortedBy { it.id }
+                            cleanedItems.add(sortedItems.first())
+                            sortedItems.drop(1).forEach { duplicateItem ->
+                                itemsToRemoveFromDb.add(duplicateItem)
+                            }
+                        }
+
+                        itemsToRemoveFromDb.forEach { item ->
+                            repository.deleteItem(item)
+                            Log.d(TAG, "Deleted duplicate item ${item.id} from database")
+                        }
+                    }
+
+                    val nonDuplicatePositions = positionMap.filter { it.value.size == 1 }
+                    nonDuplicatePositions.forEach { (_, items) ->
+                        cleanedItems.addAll(items)
+                    }
+
+                    val finalItems = cleanedItems.sortedBy { it.id }
+
                     withContext(Dispatchers.Main) {
-                        // Check for duplicate positions and remove them
-                        val positionMap = mutableMapOf<Pair<Int, Int>, MutableList<HomeItemModel>>()
-                        filteredItems.forEach { item ->
-                            val pos = Pair(item.cellX, item.cellY)
-                            positionMap.getOrPut(pos) { mutableListOf() }.add(item)
-                        }
-                        
-                        val duplicates = positionMap.filter { it.value.size > 1 }
-                        val itemsToRemoveFromDb = mutableListOf<HomeItemModel>()
-                        val cleanedItems = mutableListOf<HomeItemModel>()
-                        
-                        if (duplicates.isNotEmpty()) {
-                            Log.w(TAG, "Found duplicate positions in loaded items, removing duplicates:")
-                            duplicates.forEach { (pos, items) ->
-                                Log.w(TAG, "  Position ${pos.first},${pos.second}: ${items.map { "${it.id}(${it.packageName})" }.joinToString(", ")}")
-                                // Keep only the first item (with lowest ID), remove others
-                                val sortedItems = items.sortedBy { it.id }
-                                cleanedItems.add(sortedItems.first())
-                                // Mark others for deletion
-                                sortedItems.drop(1).forEach { duplicateItem ->
-                                    itemsToRemoveFromDb.add(duplicateItem)
-                                }
-                            }
-                            
-                            // Remove duplicates from database
-                            if (itemsToRemoveFromDb.isNotEmpty()) {
-                                lifecycleScope.launch(Dispatchers.IO) {
-                                    itemsToRemoveFromDb.forEach { item ->
-                                        repository.deleteItem(item)
-                                        Log.d(TAG, "Deleted duplicate item ${item.id} from database")
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Add non-duplicate items
-                        val nonDuplicatePositions = positionMap.filter { it.value.size == 1 }
-                        nonDuplicatePositions.forEach { (_, items) ->
-                            cleanedItems.addAll(items)
-                        }
-                        
-                        val finalItems = cleanedItems.sortedBy { it.id }
+                        cachedHomeItems = allItems
                         Log.d(TAG, "Loaded ${finalItems.size} items from database (filtered from ${allItems.size}, removed ${itemsToRemoveFromDb.size} duplicates)")
-                        
+
                         // Separate bottom bar items from regular grid items
                         val bottomBarItems = finalItems.filter { it.cellY == -1 } // Special Y for bottom bar
                         val gridItems = finalItems.filter { it.cellY != -1 }
@@ -1043,8 +1053,25 @@ class HomeScreenActivity : AppCompatActivity() {
                 }
             } finally {
                 isLoadingItems = false
+                if (pendingHomeReload && !isFinishing && !isDestroyed) {
+                    pendingHomeReload = false
+                    loadHomeScreenItems()
+                }
             }
         }
+    }
+
+    private fun applyCachedHomeVisibility() {
+        if (cachedHomeItems.isEmpty() || !::adapter.isInitialized) return
+        val filtered = filterHiddenApps(cachedHomeItems)
+        val bottomBarItems = filtered.filter { it.cellY == -1 }
+        val gridItems = filtered.filter { it.cellY != -1 }.sortedBy { it.id }
+        loadBottomBarIcons(bottomBarItems)
+        val currentHiddenState = HiddenModeStateManager.currentState
+        val shouldAnimate = previousHiddenState == true && !currentHiddenState && preferences.hideAppsInHiddenMode
+        if (shouldAnimate) adapter.submitListAnimated(gridItems) else adapter.submitList(gridItems)
+        previousHiddenState = currentHiddenState
+        focusManager.updateItems(gridItems)
     }
     
     private fun filterHiddenApps(items: List<HomeItemModel>): List<HomeItemModel> {
@@ -1700,7 +1727,6 @@ class HomeScreenActivity : AppCompatActivity() {
                             loadHomeScreenItems()
                             // Request layout update
                             gridLayout.requestLayout()
-                            gridLayout.invalidate()
                         }
                         return@launch
                     }
@@ -1979,7 +2005,7 @@ class HomeScreenActivity : AppCompatActivity() {
         
         // Handle custom key combinations only if AccessibilityService is not active
         // If AccessibilityService is enabled, it handles key combinations globally
-        if (preferences.useCustomKeys && !isAccessibilityServiceEnabled()) {
+        if (preferences.useCustomKeys && !isAccessibilityServiceEnabled() && event != null) {
             Log.d(TAG, "onKeyDown: keyCode=$keyCode, useCustomKeys=true, listener=${customKeyListener != null}")
             if (customKeyListener == null) {
                 Log.w(TAG, "customKeyListener is null, reinitializing...")
@@ -1988,7 +2014,7 @@ class HomeScreenActivity : AppCompatActivity() {
             customKeyListener?.let { listener ->
                 Log.d(TAG, "Processing key $keyCode in local customKeyListener")
                 // Just process the key, don't check return value
-                listener.onKeyEvent(keyCode)
+                listener.onKeyEvent(event)
                 // Don't return true - let the key pass through
             }
         }
@@ -2054,7 +2080,6 @@ class HomeScreenActivity : AppCompatActivity() {
                             adapter.setButtonMode(modeManager.isButtonMode())
                             // Force layout update
                             gridLayout.requestLayout()
-                            gridLayout.invalidate()
                         }
                     }
                 }
@@ -2095,6 +2120,7 @@ class HomeScreenActivity : AppCompatActivity() {
         
         // Setup custom key listener for hidden mode toggle
         setupCustomKeyListener()
+        SystemBarsController.applyHiddenMode(this, HiddenModeStateManager.currentState)
         
         // Re-check launcher mode only if not default launcher
         if (!isDefaultLauncher()) {
@@ -2150,6 +2176,13 @@ class HomeScreenActivity : AppCompatActivity() {
                 Log.d(TAG, "No items on home screen, reloading...")
                 loadHomeScreenItems()
             }
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            SystemBarsController.applyHiddenMode(this, HiddenModeStateManager.currentState)
         }
     }
     

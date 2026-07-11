@@ -41,24 +41,77 @@ class AppGridAdapter(
     private val onDragStarted: (() -> Unit)? = null
 ) : ListAdapter<AppInfo, AppGridAdapter.ViewHolder>(AppDiffCallback()) {
     
+    companion object {
+        private const val PAYLOAD_SELECTION = "selection"
+    }
+
     // Single scope for all icon loading tasks with supervisor job
     private val adapterScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    
+    private var attachedRecyclerView: RecyclerView? = null
+
     // Full list of apps for filtering
     private var fullAppsList = listOf<AppInfo>()
     private var currentFilter = ""
-    
+
+    // Выделенная позиция (D-pad навигация). Единственный источник подсветки:
+    // ресайкл view больше не размножает селектор, т.к. bind всегда
+    // выставляет isSelected по позиции.
+    var selectedPosition: Int = RecyclerView.NO_POSITION
+        private set
+
+    // Размеры/сетка одинаковы для всех ячеек — считаем один раз на датасет,
+    // а не в каждом bind (дорого на слабом железе).
+    private var cachedLayout: CachedLayout? = null
+
+    private data class CachedLayout(
+        val iconSize: Int,
+        val padding: Int,
+        val showText: Boolean,
+        val textSize: Float,
+        val maxLines: Int
+    )
+
+    fun setSelectedPosition(position: Int) {
+        if (position == selectedPosition) return
+        val old = selectedPosition
+        selectedPosition = position
+        val recycler = attachedRecyclerView
+        var oldHolder: ViewHolder? = null
+        var newHolder: ViewHolder? = null
+        // Normalize every attached view. This also clears stale selection left by an
+        // interrupted RecyclerView payload/layout from an earlier key event.
+        if (recycler != null) {
+            for (index in 0 until recycler.childCount) {
+                val holder = recycler.getChildViewHolder(recycler.getChildAt(index)) as? ViewHolder ?: continue
+                val holderPosition = holder.bindingAdapterPosition
+                holder.applySelection(holderPosition == position)
+                if (holderPosition == old) oldHolder = holder
+                if (holderPosition == position) newHolder = holder
+            }
+        }
+        if (old != RecyclerView.NO_POSITION && oldHolder == null) notifyItemChanged(old, PAYLOAD_SELECTION)
+        if (position != RecyclerView.NO_POSITION && newHolder == null) notifyItemChanged(position, PAYLOAD_SELECTION)
+    }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val view = LayoutInflater.from(parent.context)
             .inflate(R.layout.item_app_grid, parent, false)
         return ViewHolder(view)
     }
-    
+
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         try {
             holder.bind(getItem(position))
         } catch (e: Exception) {
             Log.e("AppGridAdapter", "Error binding item at position $position", e)
+        }
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int, payloads: MutableList<Any>) {
+        if (payloads.contains(PAYLOAD_SELECTION)) {
+            holder.applySelection(position == selectedPosition)
+        } else {
+            super.onBindViewHolder(holder, position, payloads)
         }
     }
     
@@ -69,102 +122,89 @@ class AppGridAdapter(
     
     override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
         super.onDetachedFromRecyclerView(recyclerView)
+        attachedRecyclerView = null
         // Cancel all coroutines when adapter is detached
         adapterScope.cancel()
+    }
+
+    override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
+        super.onAttachedToRecyclerView(recyclerView)
+        attachedRecyclerView = recyclerView
     }
 
     inner class ViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         private val appIcon: ImageView = itemView.findViewById(R.id.appIcon)
         private val appName: TextView = itemView.findViewById(R.id.appName)
         private var iconLoadJob: Job? = null
+        private var boundApp: AppInfo? = null
+        private var isLongPressed = false
+        private var isDragging = false
+        private var startX = 0f
+        private var startY = 0f
+        private var menuRunnable: Runnable? = null
+
+        init {
+            itemView.setOnClickListener { boundApp?.let(onAppClick) }
+            if (isDragEnabled) {
+                itemView.setOnTouchListener { view, event -> handleTouch(view, event) }
+            }
+            itemView.setOnLongClickListener { view -> handleLongClick(view) }
+        }
         
         fun bind(app: AppInfo) {
+            boundApp = app
             val context = itemView.context
-            val preferences = LauncherApplication.instance.preferences
-            
-            // Get grid configuration from preferences
-            // Use button grid if selected in menu settings
-            val useButtonGrid = preferences.hasButtonGridSelection && preferences.buttonPhoneGridSize.isNotEmpty()
-            
-            val gridConfig = if (useButtonGrid) {
-                // For button phones menu, use the button phone grid settings
-                val gridSize = preferences.buttonPhoneGridSize
-                val (cols, rows) = when (gridSize) {
-                    "3x3" -> 3 to 3
-                    "3x4" -> 3 to 4
-                    "3x5" -> 3 to 5
-                    "4x5" -> 4 to 5
-                    else -> 4 to 5
-                }
-                GridConfiguration(cols, rows, preferences.buttonPhoneMode)
-            } else {
-                // For touch phones, use app grid columns
-                val columns = preferences.gridColumnCount.takeIf { it > 0 } ?: 4
-                
-                // Calculate optimal rows for the app drawer based on columns
-                val rows = when (columns) {
-                    3 -> 5  // For 3 columns, use 5 rows for better icon size balance
-                    4 -> 6  // For 4 columns, use 6 rows
-                    5 -> 7  // For 5 columns, use 7 rows
-                    else -> {
-                        // For other column counts, calculate based on screen
-                        val displayMetrics = context.resources.displayMetrics
-                        val screenHeight = displayMetrics.heightPixels
-                        val estimatedItemHeight = screenHeight / 7
-                        (screenHeight / estimatedItemHeight).coerceIn(5, 8)
-                    }
-                }
-                
-                GridConfiguration(
-                    columns = columns,
-                    rows = rows,
-                    isButtonMode = false
-                )
-            }
-            
+
+            val layout = getCachedLayout(context)
+
             // Apply adaptive icon size
-            val iconSize = AdaptiveSizeCalculator.calculateIconSize(context, gridConfig)
             val layoutParams = appIcon.layoutParams
-            layoutParams.width = iconSize
-            layoutParams.height = iconSize
-            appIcon.layoutParams = layoutParams
-            
+            if (layoutParams.width != layout.iconSize || layoutParams.height != layout.iconSize) {
+                layoutParams.width = layout.iconSize
+                layoutParams.height = layout.iconSize
+                appIcon.layoutParams = layoutParams
+            }
+
             // Apply adaptive padding
-            val padding = AdaptiveSizeCalculator.calculatePadding(context, gridConfig)
-            itemView.setPadding(padding, padding, padding, padding)
-            
+            itemView.setPadding(layout.padding, layout.padding, layout.padding, layout.padding)
+
             // Apply adaptive text size and visibility
-            if (preferences.showAppLabels && AdaptiveSizeCalculator.shouldShowText(gridConfig)) {
+            if (layout.showText) {
                 appName.text = app.appName
                 appName.visibility = View.VISIBLE
-                
-                // Apply adaptive text size
-                val textSize = AdaptiveSizeCalculator.calculateTextSize(context, gridConfig)
-                appName.textSize = textSize
-                appName.maxLines = AdaptiveSizeCalculator.calculateMaxTextLines(gridConfig)
+                appName.textSize = layout.textSize
+                appName.maxLines = layout.maxLines
             } else {
                 appName.visibility = View.GONE
             }
-            
-            // Set placeholder immediately
-            appIcon.setImageDrawable(app.icon)
-            
+
+            applySelection(bindingAdapterPosition == selectedPosition)
+
             // Cancel previous icon load
             cancelIconLoad()
-            
+
+            // Warm launches bind persisted icons synchronously: no placeholder flash,
+            // coroutine, disk read or second ImageView invalidation for known apps.
+            val readyIcon = IconCache.getIconNow(context, app, layout.iconSize)
+            if (readyIcon != null) {
+                appIcon.setImageDrawable(readyIcon)
+                return
+            }
+
+            // Only new/updated apps use placeholder and background queue.
+            appIcon.setImageDrawable(app.icon)
+
             // Load real icon asynchronously using adapter scope
             iconLoadJob = adapterScope.launch {
                 try {
                     val icon = withContext(Dispatchers.IO) {
-                        // Create ComponentName for icon pack support
-                        val componentName = itemView.context.packageManager
-                            .getLaunchIntentForPackage(app.packageName)?.component
-                        
                         IconCache.loadIcon(
                             itemView.context,
                             app.packageName,
                             itemView.context.packageManager,
-                            componentName
+                            app.componentName?.let(android.content.ComponentName::unflattenFromString),
+                            layout.iconSize,
+                            app.packageFingerprint
                         )
                     }
                     // Check if job is still active before updating UI
@@ -177,21 +217,11 @@ class AppGridAdapter(
                 }
             }
             
-            itemView.setOnClickListener {
-                onAppClick(app)
-            }
-            
-            // Setup touch handling for both context menu and drag
-            var isLongPressed = false
-            var isDragging = false
-            var startX = 0f
-            var startY = 0f
-            var menuRunnable: Runnable? = null
-            
-            // Add drag detection only if drag is enabled
-            if (isDragEnabled) {
-                itemView.setOnTouchListener { view, event ->
-                    when (event.action) {
+        }
+
+        private fun handleTouch(view: View, event: android.view.MotionEvent): Boolean {
+            val app = boundApp ?: return false
+            return when (event.action) {
                         android.view.MotionEvent.ACTION_DOWN -> {
                             startX = event.rawX
                             startY = event.rawY
@@ -220,14 +250,14 @@ class AppGridAdapter(
                                     
                                     isDragging = true
                                     startDragForApp(view, app)
-                                    return@setOnTouchListener true
+                                    return true
                                 }
                             }
                             
                             // Keep scrolling disabled during long press
                             if (isLongPressed) {
                                 view.parent?.requestDisallowInterceptTouchEvent(true)
-                                return@setOnTouchListener true
+                                return true
                             }
                             
                             false
@@ -247,16 +277,13 @@ class AppGridAdapter(
                             false
                         }
                         else -> false
-                    }
-                }
             }
-            
-            // Handle long click for context menu
-            itemView.setOnLongClickListener { view ->
-                // Trigger haptic feedback immediately
-                view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-                
-                if (isDragEnabled) {
+        }
+
+        private fun handleLongClick(view: View): Boolean {
+            val app = boundApp ?: return false
+            view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            if (isDragEnabled) {
                     // If drag is enabled, set flag and wait for movement
                     isLongPressed = true
                     
@@ -271,18 +298,26 @@ class AppGridAdapter(
                             onAppLongClick?.invoke(app, view)
                         }
                     }
-                    view.postDelayed(menuRunnable!!, 100) // Wait 100ms to see if drag starts
-                } else {
-                    // If drag is NOT enabled, show context menu immediately
-                    onAppLongClick?.invoke(app, view)
-                }
-                
-                true
+                    menuRunnable?.let { view.postDelayed(it, 100) } // Wait 100ms to see if drag starts
+            } else {
+                onAppLongClick?.invoke(app, view)
             }
+            return true
         }
         
+        fun applySelection(selected: Boolean) {
+            itemView.isSelected = selected
+            val scale = if (selected) 1.05f else 1.0f
+            itemView.scaleX = scale
+            itemView.scaleY = scale
+        }
+
         fun cancelIconLoad() {
             iconLoadJob?.cancel()
+            menuRunnable?.let(itemView::removeCallbacks)
+            menuRunnable = null
+            isLongPressed = false
+            isDragging = false
         }
         
         private fun startDragForApp(view: View, app: AppInfo) {
@@ -314,9 +349,53 @@ class AppGridAdapter(
         }
     }
     
+    private fun getCachedLayout(context: Context): CachedLayout {
+        cachedLayout?.let { return it }
+
+        val preferences = LauncherApplication.instance.preferences
+
+        // Get grid configuration from preferences
+        // Use button grid if selected in menu settings
+        val useButtonGrid =
+            preferences.hasButtonGridSelection && preferences.buttonPhoneGridSize.isNotEmpty()
+
+        val gridConfig = if (useButtonGrid) {
+            val (cols, rows) = when (preferences.buttonPhoneGridSize) {
+                "3x3" -> 3 to 3
+                "3x4" -> 3 to 4
+                "3x5" -> 3 to 5
+                "4x5" -> 4 to 5
+                else -> 4 to 5
+            }
+            GridConfiguration(cols, rows, preferences.buttonPhoneMode)
+        } else {
+            val columns = preferences.gridColumnCount.takeIf { it > 0 } ?: 4
+            val rows = when (columns) {
+                3 -> 5
+                4 -> 6
+                5 -> 7
+                else -> 6
+            }
+            GridConfiguration(columns = columns, rows = rows, isButtonMode = false)
+        }
+
+        val showText = preferences.showAppLabels && AdaptiveSizeCalculator.shouldShowText(gridConfig)
+        val layout = CachedLayout(
+            iconSize = AdaptiveSizeCalculator.calculateIconSize(context, gridConfig),
+            padding = AdaptiveSizeCalculator.calculatePadding(context, gridConfig),
+            showText = showText,
+            textSize = if (showText) AdaptiveSizeCalculator.calculateTextSize(context, gridConfig) else 0f,
+            maxLines = if (showText) AdaptiveSizeCalculator.calculateMaxTextLines(gridConfig) else 1
+        )
+        cachedLayout = layout
+        return layout
+    }
+
     // Override submitList to store full list
     override fun submitList(list: List<AppInfo>?) {
         fullAppsList = list ?: emptyList()
+        // Настройки сетки/подписей могли измениться — пересчитаем при следующем bind
+        cachedLayout = null
         applyFilter()
     }
     

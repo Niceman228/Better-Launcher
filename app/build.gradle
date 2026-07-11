@@ -11,9 +11,13 @@ android {
     defaultConfig {
         applicationId "com.customlauncher.app"
         minSdk 26
-        targetSdk 34
-        versionCode 41
-        versionName "4.1"
+        // targetSdk 28 — осознанно: приложения с target <= 28 могут переключать
+        // Wi-Fi (WifiManager.setWifiEnabled) и Bluetooth на Android 10+.
+        // С target >= 29 система блокирует эти API без Shizuku/root.
+        // Приложение ставится локально (APK), требования Play Store не применимы.
+        targetSdk 28
+        versionCode 48
+        versionName "4.8"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         
@@ -42,7 +46,7 @@ android {
         debug {
             applicationVariants.all { variant ->
                 variant.outputs.all {
-                    outputFileName = "ИLauncher.apk"
+                    outputFileName = "ilauncher-debug.apk"
                 }
             }
         }
@@ -62,6 +66,12 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
+
+    lint {
+        // Local Qin F22 build intentionally targets 28 for Wi-Fi/Bluetooth control.
+        // Keep every other release lint check fatal.
+        disable 'ExpiredTargetSdkVersion'
+    }
 }
 
 dependencies {
@@ -70,6 +80,7 @@ dependencies {
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'androidx.recyclerview:recyclerview:1.3.2'
+    implementation 'androidx.profileinstaller:profileinstaller:1.3.1'
     implementation 'androidx.cardview:cardview:1.0.0'
     implementation 'androidx.viewpager2:viewpager2:1.0.0'
     

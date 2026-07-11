@@ -39,6 +39,7 @@ import com.customlauncher.app.ui.HomeScreenActivity
 import com.customlauncher.app.ui.adapter.AppGridAdapter
 import com.customlauncher.app.ui.layout.PaginatedGridLayoutManager
 import com.customlauncher.app.ui.viewmodel.AppViewModel
+import com.customlauncher.app.utils.SystemBarsController
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import kotlinx.coroutines.flow.collectLatest
@@ -62,6 +63,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
     // D-pad navigation support
     private lateinit var modeManager: HomeScreenModeManager
     private var focusedPosition: Int = 0
+    private var hiddenForReuse = false
     private var isButtonMode: Boolean = false
     private var currentPopupWindow: PopupWindow? = null
     
@@ -72,18 +74,23 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
         clearFocus()
     }
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setStyle(STYLE_NORMAL, R.style.BottomSheetDialogTheme)
+    }
+
     // BroadcastReceiver for package changes
     private val packageChangeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            val action = intent?.action
-            val packageName = intent?.data?.schemeSpecificPart
+            val action = intent?.getStringExtra("action") ?: intent?.action
+            val packageName = intent?.getStringExtra("package") ?: intent?.data?.schemeSpecificPart
             
             Log.d(TAG, "Package change detected: $action for $packageName")
             
             when (action) {
                 Intent.ACTION_PACKAGE_REMOVED -> {
                     // Check if package is being replaced
-                    val replacing = intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)
+                    val replacing = intent?.getBooleanExtra(Intent.EXTRA_REPLACING, false) ?: false
                     if (!replacing) {
                         Log.d(TAG, "Package removed: $packageName")
                         // Use special handler for package removal
@@ -127,7 +134,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                 Log.d(TAG, "Received close drawer broadcast - Hidden mode: $isEnteringHiddenMode, Should close: $shouldCloseApps")
                 
                 if (isEnteringHiddenMode && shouldCloseApps) {
-                    dismiss()
+                    hideForReuse()
                 } else {
                     Log.d(TAG, "Ignoring close drawer broadcast - conditions not met")
                 }
@@ -150,6 +157,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
             window.setDimAmount(0.5f)
             // Set transparent background to see our custom rounded background
             window.setBackgroundDrawableResource(android.R.color.transparent)
+            window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             
             // Set status bar color to match the bottom sheet background
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
@@ -176,29 +184,14 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                 @Suppress("DEPRECATION")
                 window.decorView.systemUiVisibility = flags
             }
+
+            activity?.let { SystemBarsController.applyHiddenMode(it, currentHiddenState) }
         }
         
         // Apply transparent background to bottom sheet container
         dialog.setOnShowListener { dialogInterface ->
             val bottomSheetDialog = dialogInterface as com.google.android.material.bottomsheet.BottomSheetDialog
-            
-            // Find the bottom sheet frame layout and make it transparent
-            val bottomSheetInternal = bottomSheetDialog.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
-            bottomSheetInternal?.let { sheet ->
-                // Remove the default white background
-                sheet.setBackgroundResource(android.R.color.transparent)
-                
-                // Get parent to also make it transparent
-                (sheet.parent as? View)?.setBackgroundResource(android.R.color.transparent)
-            }
-            
-            // Find coordinator layout and make it transparent too
-            val coordinator = bottomSheetDialog.findViewById<View>(com.google.android.material.R.id.coordinator)
-            coordinator?.setBackgroundResource(android.R.color.transparent)
-            
-            // Find container and make it transparent
-            val container = bottomSheetDialog.findViewById<View>(com.google.android.material.R.id.container)
-            container?.setBackgroundResource(android.R.color.transparent)
+            applyTransparentDialogChrome(bottomSheetDialog)
         }
         
         return dialog
@@ -219,7 +212,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
             Log.d(TAG, "Dialog cancel blocked - home screen is disabled")
             return
         }
-        super.onCancel(dialog)
+        hideForReuse()
     }
     
     override fun onDismiss(dialog: DialogInterface) {
@@ -261,8 +254,68 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                     window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
                             android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                 }
+
+                activity?.let { SystemBarsController.applyHiddenMode(it, currentHiddenState) }
             }
         }
+    }
+
+    /** Keep fragment, adapter and inflated grid alive between drawer openings. */
+    fun reopen() {
+        val drawerDialog = dialog ?: return
+        hiddenForReuse = false
+        drawerDialog.show()
+        binding.root.apply {
+            animate().cancel()
+            translationY = height.coerceAtLeast(resources.displayMetrics.heightPixels).toFloat()
+            visibility = View.VISIBLE
+            animate().translationY(0f).setDuration(220L).withEndAction { finishReopen() }.start()
+            // Animation end callbacks are not guaranteed on this firmware (a cancelled
+            // ViewPropertyAnimator drops withEndAction). Always settle the final state.
+            postDelayed({ finishReopen() }, 300L)
+        }
+        isCancelable = false
+        (activity as? HomeScreenActivity)?.let { SystemBarsController.applyHiddenMode(it, HiddenModeStateManager.currentState) }
+        restartFocusTimer()
+    }
+
+    private fun finishReopen() {
+        if (hiddenForReuse || view == null) return
+        binding.root.translationY = 0f
+        binding.root.visibility = View.VISIBLE
+    }
+
+    /** True only when the sheet is actually interactable on screen. */
+    fun isShowingOnScreen(): Boolean {
+        if (hiddenForReuse) return false
+        val drawerDialog = dialog ?: return false
+        if (!drawerDialog.isShowing) return false
+        val root = view ?: return false
+        return root.visibility == View.VISIBLE && root.translationY < root.height.coerceAtLeast(1)
+    }
+
+    private fun hideForReuse() {
+        if (hiddenForReuse || !isAdded) return
+        hiddenForReuse = true
+        stopFocusTimer()
+        appAdapter.setSelectedPosition(androidx.recyclerview.widget.RecyclerView.NO_POSITION)
+        currentPopupWindow?.dismiss()
+        binding.root.animate().cancel()
+        binding.root.animate()
+            .translationY(binding.root.height.coerceAtLeast(resources.displayMetrics.heightPixels).toFloat())
+            .setDuration(200L)
+            .withEndAction { finishHide() }
+            .start()
+        // Guaranteed fallback: if the end action is dropped, the transparent dialog
+        // window would keep swallowing every key and touch. Never rely on it alone.
+        binding.root.postDelayed({ finishHide() }, 280L)
+        (activity as? HomeScreenActivity)?.onAppDrawerClosed()
+    }
+
+    private fun finishHide() {
+        if (!hiddenForReuse || view == null) return
+        dialog?.hide()
+        binding.root.translationY = 0f
     }
     
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -272,6 +325,10 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
         dialog?.let { dialog ->
             val bottomSheet = dialog.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
             bottomSheet?.let {
+                it.setBackgroundColor(Color.TRANSPARENT)
+                it.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.TRANSPARENT)
+                (it.parent as? View)?.setBackgroundColor(Color.TRANSPARENT)
+
                 val behavior = BottomSheetBehavior.from(it)
                 behavior.state = BottomSheetBehavior.STATE_EXPANDED
                 behavior.peekHeight = 0
@@ -298,7 +355,9 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
             }
         }
         
-        viewModel = ViewModelProvider(this)[AppViewModel::class.java]
+        // Activity scope: ViewModel and its loaded lists survive drawer close, so a
+        // reopened sheet renders the grid synchronously instead of waiting for IO.
+        viewModel = ViewModelProvider(requireActivity())[AppViewModel::class.java]
         
         // Initialize mode manager
         modeManager = HomeScreenModeManager(requireContext())
@@ -319,19 +378,10 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
         // Setup search if enabled
         updateSearchVisibility()
         
-        // Register package change receiver - directly register system events for Android 16 compatibility
-        val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_PACKAGE_REMOVED)
-            addAction(Intent.ACTION_PACKAGE_ADDED)
-            addAction(Intent.ACTION_PACKAGE_REPLACED)
-            addAction(Intent.ACTION_PACKAGE_CHANGED)
-            addDataScheme("package")
-        }
+        val filter = IntentFilter("com.customlauncher.PACKAGE_CHANGED")
         
         // Use RECEIVER_EXPORTED for Android 16 to ensure we receive system broadcasts
-        if (Build.VERSION.SDK_INT >= 34) { // Android 14+
-            requireContext().registerReceiver(packageChangeReceiver, filter, Context.RECEIVER_EXPORTED)
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requireContext().registerReceiver(packageChangeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             requireContext().registerReceiver(packageChangeReceiver, filter)
@@ -357,6 +407,25 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
         }
     }
 
+    private fun applyTransparentDialogChrome(dialog: com.google.android.material.bottomsheet.BottomSheetDialog) {
+        val transparent = ColorDrawable(Color.TRANSPARENT)
+
+        dialog.window?.setBackgroundDrawable(transparent)
+
+        val bottomSheetInternal = dialog.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
+        bottomSheetInternal?.let { sheet ->
+            sheet.setBackgroundColor(Color.TRANSPARENT)
+            sheet.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.TRANSPARENT)
+            (sheet.parent as? View)?.setBackgroundColor(Color.TRANSPARENT)
+        }
+
+        val coordinator = dialog.findViewById<View>(com.google.android.material.R.id.coordinator)
+        coordinator?.setBackgroundColor(Color.TRANSPARENT)
+
+        val container = dialog.findViewById<View>(com.google.android.material.R.id.container)
+        container?.setBackgroundColor(Color.TRANSPARENT)
+    }
+
     private fun setupRecyclerView() {
         appAdapter = AppGridAdapter(
             onAppClick = { app -> launchApp(app) },
@@ -365,7 +434,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
             onDragStarted = { 
                 // Close the bottom sheet when drag starts only if home screen is enabled
                 if (preferences.showHomeScreen) {
-                    dismiss()
+                    hideForReuse()
                 }
             }
         )
@@ -373,14 +442,17 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
         binding.appsGrid.apply {
             adapter = appAdapter
             updateGridLayoutManager()
-            
-            // Настройка плавной анимации для изменений списка
-            itemAnimator?.apply {
-                addDuration = 200
-                removeDuration = 200
-                moveDuration = 250
-                changeDuration = 250
-            }
+
+            setHasFixedSize(true)
+            isNestedScrollingEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+
+            // Анимации отключены: change-анимация (cross-fade) рисует два view
+            // одной позиции одновременно — визуальное задвоение селектора,
+            // а на слабом GPU ещё и тормозит открытие меню.
+            itemAnimator = null
+            // Qin F22/PowerVR: no edge gradients. Avoid extra composition during drawer animation.
+            setFadeEnabled(false)
             
             // Enable drag & drop to home screen
             setOnDragListener { _, event ->
@@ -407,7 +479,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
         // Setup drag handle for dismissing (only if home screen is enabled)
         binding.dragHandle.setOnClickListener {
             if (preferences.showHomeScreen) {
-                dismiss()
+                hideForReuse()
             }
         }
     }
@@ -592,17 +664,23 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                     Log.d(TAG, "Initialized paginated layout at position 0")
                 }
                 
-                // Request focus on the first view
-                val firstView = layoutManager.findViewByPosition(0)
-                firstView?.requestFocus()
-                
                 Log.d(TAG, "D-pad navigation setup complete, focused on position 0")
             }
         }
         
         // Setup key listener for the dialog
         dialog?.setOnKeyListener { _, keyCode, event ->
+            // Sheet hidden for reuse: never consume keys. Otherwise a ghost dialog
+            // window would silently eat D-pad and BACK for the whole launcher.
+            if (hiddenForReuse) {
+                finishHide()
+                return@setOnKeyListener false
+            }
             if (event.action == KeyEvent.ACTION_DOWN) {
+                if (keyCode == KeyEvent.KEYCODE_BACK && preferences.showHomeScreen) {
+                    hideForReuse()
+                    return@setOnKeyListener true
+                }
                 // Handle BACK key specially when home screen is disabled
                 if (keyCode == KeyEvent.KEYCODE_BACK && !preferences.showHomeScreen) {
                     Log.d(TAG, "Back key pressed but home screen is disabled, ignoring")
@@ -649,7 +727,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                     // We're at the top, close the bottom sheet only if home screen is enabled
                     if (preferences.showHomeScreen) {
                         Log.d(TAG, "Reached top of list, closing drawer")
-                        dismiss()
+                        hideForReuse()
                     } else {
                         Log.d(TAG, "At top of list, but home screen is disabled")
                     }
@@ -719,7 +797,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                     // At top row, close the drawer only if home screen is enabled
                     if (preferences.showHomeScreen) {
                         Log.d(TAG, "Reached top of page, closing drawer")
-                        dismiss()
+                        hideForReuse()
                     } else {
                         Log.d(TAG, "At top of page, but home screen is disabled")
                     }
@@ -850,30 +928,17 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
             binding.appsGrid.scrollToPosition(position)
         }
         
-        // Request focus on the view
-        binding.appsGrid.post {
-            val viewHolder = binding.appsGrid.findViewHolderForAdapterPosition(position)
-            viewHolder?.itemView?.requestFocus()
-        }
-        
         // Restart the focus timeout timer
         restartFocusTimer()
     }
     
     private fun updateItemFocus(position: Int, hasFocus: Boolean = true) {
-        binding.appsGrid.post {
-            val viewHolder = binding.appsGrid.findViewHolderForAdapterPosition(position)
-            viewHolder?.itemView?.let { view ->
-                if (hasFocus) {
-                    view.setBackgroundResource(R.drawable.bg_item_focused)
-                    view.scaleX = 1.05f
-                    view.scaleY = 1.05f
-                } else {
-                    view.background = null
-                    view.scaleX = 1.0f
-                    view.scaleY = 1.0f
-                }
-            }
+        // Подсветка живёт в адаптере (isSelected + selector drawable):
+        // ручная замена background на ресайклящихся view задваивала селектор.
+        if (hasFocus) {
+            appAdapter.setSelectedPosition(position)
+        } else if (appAdapter.selectedPosition == position) {
+            appAdapter.setSelectedPosition(androidx.recyclerview.widget.RecyclerView.NO_POSITION)
         }
     }
     
@@ -897,7 +962,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                 val intent = Intent(requireContext(), AppListActivity::class.java)
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
-                dismiss()
+                hideForReuse()
                 return
             }
             
@@ -906,7 +971,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
-                dismiss()
+                hideForReuse()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error launching app: ${app.packageName}", e)

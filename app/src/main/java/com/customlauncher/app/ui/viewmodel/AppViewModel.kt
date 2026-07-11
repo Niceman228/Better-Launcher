@@ -12,13 +12,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.isActive
 import android.util.Log
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
+import com.customlauncher.app.utils.IconCache
 
 class AppViewModel : ViewModel() {
     
@@ -37,14 +34,45 @@ class AppViewModel : ViewModel() {
     val filteredApps: LiveData<List<AppInfo>> = _filteredApps
     
     // Optimization for weak devices
-    private val loadMutex = Mutex()
     private var loadJob: Job? = null
     private var saveJob: Job? = null
-    private val isLoading = AtomicBoolean(false)
-    private val loadCounter = AtomicInteger(0)
     
     init {
+        // First-frame path: catalog snapshot and preloaded icons are ready right after
+        // startup, so the very first drawer open renders without an IO round trip.
+        publishWarmSnapshot()
         loadApps()
+    }
+
+    private fun publishWarmSnapshot() {
+        if (!IconCache.isStartupPreloadComplete()) return
+        val apps = repository.warmCatalog()
+        if (apps.isEmpty()) return
+        val (allList, visibleList, hiddenList) = partitionWithSelection(apps)
+        _allApps.value = allList
+        _visibleApps.value = visibleList
+        _hiddenApps.value = hiddenList
+        _filteredApps.value = allList
+    }
+
+    private fun partitionWithSelection(
+        apps: List<AppInfo>
+    ): Triple<List<AppInfo>, List<AppInfo>, List<AppInfo>> {
+        val tempSelection = SelectionManager.getSelection()
+        val savedHiddenApps = if (tempSelection.isEmpty()) {
+            LauncherApplication.instance.preferences.getHiddenApps()
+        } else {
+            tempSelection
+        }
+        val allList = ArrayList<AppInfo>(apps.size)
+        val visibleList = ArrayList<AppInfo>(apps.size)
+        val hiddenList = ArrayList<AppInfo>()
+        apps.forEach { app ->
+            val appWithSelection = app.copy(isSelected = savedHiddenApps.contains(app.packageName))
+            allList.add(appWithSelection)
+            if (appWithSelection.isHidden) hiddenList.add(appWithSelection) else visibleList.add(appWithSelection)
+        }
+        return Triple(allList, visibleList, hiddenList)
     }
     
     fun invalidateCache() {
@@ -63,86 +91,29 @@ class AppViewModel : ViewModel() {
     }
     
     fun loadApps() {
-        val loadId = loadCounter.incrementAndGet()
-        Log.d("AppViewModel", "loadApps() called, loadId=$loadId")
-        
-        // Don't start new load if already loading
-        if (isLoading.get()) {
-            Log.d("AppViewModel", "Already loading, skipping loadId=$loadId")
-            return
-        }
-        
-        // Cancel previous load job if still running
-        loadJob?.cancel()
-        
+        if (loadJob?.isActive == true) return
         loadJob = viewModelScope.launch(Dispatchers.IO) {
-            if (!isActive) return@launch
-            
-            isLoading.set(true)
+            val started = android.os.SystemClock.elapsedRealtime()
             try {
-                // Use tryLock with timeout instead of blocking lock
-                if (loadMutex.tryLock()) {
-                    try {
-                        Log.d("AppViewModel", "Loading apps from repository, loadId=$loadId")
-                        val apps = repository.getAllInstalledApps()
-                        
-                        if (!isActive) {
-                            Log.d("AppViewModel", "Job cancelled during loading, loadId=$loadId")
-                            return@launch
-                        }
-                        
-                        Log.d("AppViewModel", "Loaded ${apps.size} apps from repository, loadId=$loadId")
-                    
-                    // First check temporary selection, then saved hidden apps
-                    val tempSelection = SelectionManager.getSelection()
-                    val savedHiddenApps = if (tempSelection.isEmpty()) {
-                        LauncherApplication.instance.preferences.getHiddenApps()
-                    } else {
-                        tempSelection
-                    }
-                    
-                    // Single pass processing - more efficient
-                    val visibleList = mutableListOf<AppInfo>()
-                    val hiddenList = mutableListOf<AppInfo>()
-                    val allList = mutableListOf<AppInfo>()
-                    
-                    apps.forEach { app ->
-                        val appWithSelection = app.copy(isSelected = savedHiddenApps.contains(app.packageName))
-                        allList.add(appWithSelection)
-                        
-                        if (appWithSelection.isHidden) {
-                            hiddenList.add(appWithSelection)
-                        } else {
-                            visibleList.add(appWithSelection)
-                        }
-                    }
-                    
-                        Log.d("AppViewModel", "Processed apps - visible: ${visibleList.size}, hidden: ${hiddenList.size}, loadId=$loadId")
-                        
-                        if (!isActive) {
-                            Log.d("AppViewModel", "Job cancelled before UI update, loadId=$loadId")
-                            return@launch
-                        }
-                        
-                        // Switch to Main thread for UI updates - single update
-                        withContext(Dispatchers.Main) {
-                            if (isActive) {
+                // Never publish known apps before their persisted icons are in memory.
+                // New/updated apps are absent from disk and still load lazily.
+                IconCache.awaitStartupPreload()
+                val apps = repository.getAllInstalledApps()
+                if (!isActive) return@launch
+                val (allList, visibleList, hiddenList) = partitionWithSelection(apps)
+                withContext(Dispatchers.Main) {
+                    if (isActive) {
                                 _allApps.value = allList
                                 _visibleApps.value = visibleList
                                 _hiddenApps.value = hiddenList
                                 _filteredApps.value = allList
-                                Log.d("AppViewModel", "UI updated successfully, loadId=$loadId")
+                        if (LauncherApplication.instance.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+                            Log.d("AppCatalogPerf", "viewmodel count=${allList.size} ms=${android.os.SystemClock.elapsedRealtime() - started}")
+                        }
                             }
                         }
-                    } finally {
-                        loadMutex.unlock()
-                    }
-                } else {
-                    Log.d("AppViewModel", "Could not acquire lock, skipping loadId=$loadId")
-                }
             } catch (e: Exception) {
-                Log.e("AppViewModel", "Error loading apps, loadId=$loadId", e)
-                e.printStackTrace()
+                Log.e("AppViewModel", "Error loading apps", e)
                 
                 // Set empty lists on error to prevent crash but keep existing data if possible
                 withContext(Dispatchers.Main) {
@@ -153,8 +124,6 @@ class AppViewModel : ViewModel() {
                         _filteredApps.value = emptyList()
                     }
                 }
-            } finally {
-                isLoading.set(false)
             }
         }
     }

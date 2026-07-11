@@ -3,6 +3,7 @@ package com.customlauncher.app.data.preferences
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
+import com.customlauncher.app.manager.DirectBootStateStore
 
 class LauncherPreferences(context: Context) {
     
@@ -18,7 +19,12 @@ class LauncherPreferences(context: Context) {
     
     var appsHidden: Boolean
         get() = prefs.getBoolean(KEY_APPS_HIDDEN, false)
-        set(value) = prefs.edit().putBoolean(KEY_APPS_HIDDEN, value).apply()
+        set(value) {
+            prefs.edit()
+                .putBoolean(KEY_APPS_HIDDEN, value)
+                .putLong(KEY_APPS_HIDDEN_CHANGED_AT, System.currentTimeMillis())
+                .commit()
+        }
     
     // Icon pack preferences
     var selectedIconPack: String?
@@ -43,7 +49,7 @@ class LauncherPreferences(context: Context) {
             if (hiddenAppsCache == null) {
                 hiddenAppsCache = sharedPreferences.getStringSet(KEY_HIDDEN_APPS, emptySet())?.toSet() ?: emptySet()
             }
-            return hiddenAppsCache!!
+            return hiddenAppsCache ?: emptySet()
         }
     }
     
@@ -82,15 +88,12 @@ class LauncherPreferences(context: Context) {
         // Update cache first
         hiddenAppsCache = newSet
         
-        // Then save to disk with commit() for immediate persistence
-        val editor = sharedPreferences.edit()
-        editor.remove(KEY_HIDDEN_APPS)
-        editor.putStringSet(KEY_HIDDEN_APPS, newSet)
-        
-        // Use commit() on background thread for Android 11 compatibility
-        Thread {
-            editor.commit()
-        }.start()
+        // Persist in the same order as cache updates. Spawning a thread per write can
+        // let an older hidden-apps snapshot overwrite a newer one.
+        sharedPreferences.edit {
+            remove(KEY_HIDDEN_APPS)
+            putStringSet(KEY_HIDDEN_APPS, newSet)
+        }
     }
     
     fun areAppsHidden(): Boolean = appsHidden
@@ -127,11 +130,17 @@ class LauncherPreferences(context: Context) {
     
     var customKeyCombination: String?
         get() = prefs.getString(KEY_CUSTOM_KEY_COMBINATION, null)
-        set(value) = prefs.edit().putString(KEY_CUSTOM_KEY_COMBINATION, value).apply()
+        set(value) {
+            prefs.edit().putString(KEY_CUSTOM_KEY_COMBINATION, value).apply()
+            DirectBootStateStore.saveCustomKeySettings(context, useCustomKeys, value)
+        }
     
     var useCustomKeys: Boolean
         get() = prefs.getBoolean(KEY_USE_CUSTOM_KEYS, false)
-        set(value) = prefs.edit().putBoolean(KEY_USE_CUSTOM_KEYS, value).apply()
+        set(value) {
+            prefs.edit().putBoolean(KEY_USE_CUSTOM_KEYS, value).apply()
+            DirectBootStateStore.saveCustomKeySettings(context, value, customKeyCombination)
+        }
     
     // New feature toggles
     var closeAppsOnHiddenMode: Boolean
@@ -153,6 +162,10 @@ class LauncherPreferences(context: Context) {
     var blockScreenshotsInHiddenMode: Boolean
         get() = prefs.getBoolean(KEY_BLOCK_SCREENSHOTS_IN_HIDDEN, true)  // Default: enabled
         set(value) = prefs.edit().putBoolean(KEY_BLOCK_SCREENSHOTS_IN_HIDDEN, value).apply()
+
+    var disableNetworkInHiddenMode: Boolean
+        get() = prefs.getBoolean(KEY_DISABLE_NETWORK_IN_HIDDEN, false)  // Default: disabled
+        set(value) = prefs.edit().putBoolean(KEY_DISABLE_NETWORK_IN_HIDDEN, value).apply()
     
     var checkPermissionsOnStartup: Boolean
         get() = prefs.getBoolean(KEY_CHECK_PERMISSIONS, true)  // Default: enabled
@@ -238,6 +251,7 @@ class LauncherPreferences(context: Context) {
     companion object {
         private const val PREFS_NAME = "launcher_preferences"
         private const val KEY_APPS_HIDDEN = "apps_hidden"
+        private const val KEY_APPS_HIDDEN_CHANGED_AT = "apps_hidden_changed_at"
         private const val KEY_ICON_PACK = "icon_pack"
         private const val KEY_HIDDEN_APPS = "hidden_apps"
         private const val KEY_TOUCH_BLOCKED = "touch_blocked"
@@ -250,6 +264,7 @@ class LauncherPreferences(context: Context) {
         private const val KEY_ENABLE_DND_IN_HIDDEN = "enable_dnd_in_hidden"
         private const val KEY_HIDE_APPS_IN_HIDDEN = "hide_apps_in_hidden"
         private const val KEY_BLOCK_SCREENSHOTS_IN_HIDDEN = "block_screenshots_in_hidden"
+        private const val KEY_DISABLE_NETWORK_IN_HIDDEN = "disable_network_in_hidden"
         private const val KEY_CHECK_PERMISSIONS = "check_permissions_on_startup"
         private const val KEY_BUTTON_PHONE_MODE = "button_phone_mode"
         private const val KEY_BUTTON_PHONE_GRID_SIZE = "button_phone_grid_size"

@@ -1,0 +1,7 @@
+HSPLcom/customlauncher/app/LauncherApplication;->onCreate()V
+HSPLcom/customlauncher/app/data/repository/AppRepository;->getAllInstalledApps(Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+HSPLcom/customlauncher/app/ui/MainActivity;->onCreate(Landroid/os/Bundle;)V
+HSPLcom/customlauncher/app/ui/dialog/AppDrawerBottomSheet;->onCreateView(Landroid/view/LayoutInflater;Landroid/view/ViewGroup;Landroid/os/Bundle;)Landroid/view/View;
+HSPLcom/customlauncher/app/ui/adapter/AppGridAdapter;->onCreateViewHolder(Landroid/view/ViewGroup;I)Lcom/customlauncher/app/ui/adapter/AppGridAdapter$ViewHolder;
+HSPLcom/customlauncher/app/ui/adapter/AppGridAdapter;->onBindViewHolder(Lcom/customlauncher/app/ui/adapter/AppGridAdapter$ViewHolder;I)V
+HSPLcom/customlauncher/app/ui/layout/PaginatedGridLayoutManager;->onLayoutChildren(Landroidx/recyclerview/widget/RecyclerView$Recycler;Landroidx/recyclerview/widget/RecyclerView$State;)V

@@ -1,23 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    
-    <!-- Semi-transparent yellow background -->
-    <solid android:color="#80FFD700" /> <!-- 50% transparent yellow/gold -->
-    
+
+    <!-- Opaque highlight: 50% gold pre-blended over @color/background_dark (#212121).
+         Looks identical to the old translucent #80FFD700, but avoids alpha
+         blending artifacts at rounded corners on weak GPUs. -->
+    <solid android:color="#FF907C10" />
+
     <!-- Rounded corners for softer appearance -->
     <corners android:radius="12dp" />
-    
+
     <!-- Border for better visibility -->
     <stroke
         android:width="2dp"
-        android:color="#FFD700" /> <!-- Solid yellow border -->
-        
+        android:color="#FFD700" />
+
     <!-- Padding to prevent content from touching edges -->
     <padding
         android:left="4dp"
         android:top="4dp"
         android:right="4dp"
         android:bottom="4dp" />
-        
+
 </shape>

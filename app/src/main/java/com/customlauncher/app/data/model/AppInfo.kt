@@ -7,5 +7,7 @@ data class AppInfo(
     val packageName: String,
     val icon: Drawable?,
     val isHidden: Boolean = false,
-    val isSelected: Boolean = false
+    val isSelected: Boolean = false,
+    val componentName: String? = null,
+    val packageFingerprint: Long = 0L
 )

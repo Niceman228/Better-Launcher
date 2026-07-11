@@ -21,6 +21,7 @@ import com.customlauncher.app.R
 import com.customlauncher.app.ui.MainActivity
 import android.app.KeyguardManager
 import com.customlauncher.app.LauncherApplication
+import com.customlauncher.app.manager.DirectBootStateStore
 
 class TouchBlockService : Service() {
     
@@ -67,6 +68,13 @@ class TouchBlockService : Service() {
     
     private fun blockTouch() {
         try {
+            if (!isOverlayTouchBlockingEnabled()) {
+                android.util.Log.w(TAG, "Touch overlay blocking is disabled for Qin F22 stability")
+                unblockTouch()
+                stopSelf()
+                return
+            }
+
             // Service is only called when needed by HiddenModeStateManager
             if (blockView != null) {
                 if (DEBUG) android.util.Log.d(TAG, "Block view already exists")
@@ -84,8 +92,11 @@ class TouchBlockService : Service() {
             if (DEBUG) android.util.Log.d(TAG, "Starting touch blocking in hidden mode...")
             
             // Get preferences to check if screenshot blocking is enabled
-            val preferences = LauncherApplication.instance.preferences
-            val shouldBlockScreenshots = preferences.blockScreenshotsInHiddenMode
+            val shouldBlockScreenshots = try {
+                LauncherApplication.instance.preferences.blockScreenshotsInHiddenMode
+            } catch (e: Exception) {
+                DirectBootStateStore.getFeatureSnapshot(this).blockScreenshots
+            }
             
             // Get window manager safely
             windowManager = try {
@@ -315,6 +326,8 @@ class TouchBlockService : Service() {
         }
         return result
     }
+
+    private fun isOverlayTouchBlockingEnabled(): Boolean = false
     
     override fun onDestroy() {
         super.onDestroy()

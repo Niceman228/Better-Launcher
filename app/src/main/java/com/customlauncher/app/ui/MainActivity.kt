@@ -27,6 +27,7 @@ import com.customlauncher.app.data.model.CustomKeyCombination
 import com.customlauncher.app.ui.adapter.AppGridAdapter
 import com.customlauncher.app.ui.viewmodel.AppViewModel
 import com.customlauncher.app.utils.IconCache
+import com.customlauncher.app.utils.SystemBarsController
 import android.util.Log
 import android.widget.Toast
 import android.content.BroadcastReceiver
@@ -99,8 +100,7 @@ class MainActivity : AppCompatActivity() {
                 "com.customlauncher.HIDDEN_MODE_CHANGED" -> {
                     val isHidden = intent.getBooleanExtra("is_hidden", false)
                     Log.d("MainActivity", "Received hidden mode change broadcast: $isHidden")
-                    // Force refresh state and UI
-                    HiddenModeStateManager.refreshState(context ?: return)
+                    SystemBarsController.applyHiddenMode(this@MainActivity, isHidden)
                     updateVisibility()
                 }
             }
@@ -204,7 +204,7 @@ class MainActivity : AppCompatActivity() {
                             viewModel.loadApps()
                         }
                     }
-                    reloadHandler.postDelayed(reloadRunnable!!, 150) // 150ms for quick response
+                    reloadRunnable?.let { reloadHandler.postDelayed(it, 150) } // 150ms for quick response
                 }
             }
         }
@@ -350,6 +350,7 @@ class MainActivity : AppCompatActivity() {
         }
         
         // Check initial state
+        SystemBarsController.applyHiddenMode(this, HiddenModeStateManager.currentState)
         updateVisibility()
         
         // Initialize custom key listener
@@ -360,6 +361,12 @@ class MainActivity : AppCompatActivity() {
         // Clean up old listener first
         customKeyListener?.destroy()
         customKeyListener = null
+
+        // AccessibilityService handles key combinations globally when enabled.
+        if (isAccessibilityServiceEnabled()) {
+            Log.d("MainActivity", "AccessibilityService is enabled, skipping local key listener setup")
+            return
+        }
         
         val preferences = LauncherApplication.instance.preferences
         
@@ -436,17 +443,22 @@ class MainActivity : AppCompatActivity() {
             }
             
             adapter = appAdapter
-            
+
             // Performance optimizations
             setHasFixedSize(true)
-            setItemViewCacheSize(20) // Cache more views
-            recycledViewPool.setMaxRecycledViews(0, 20) // Increase recycled view pool
+            val pageItems = (paginatedLayoutManager?.pageSize ?: 12)
+            setItemViewCacheSize(pageItems)
+            recycledViewPool.setMaxRecycledViews(0, pageItems)
             isNestedScrollingEnabled = false // Disable nested scrolling if not needed
+
+            // Change-анимация рисует два view одной позиции (задвоение селектора)
+            itemAnimator = null
             
             // Set custom fade sizes to match padding
             val topFadeSize = (50 * resources.displayMetrics.density).toInt()
             val bottomFadeSize = (40 * resources.displayMetrics.density).toInt()
             setFadeSizes(topFadeSize, bottomFadeSize)
+            setFadeEnabled(false)
             
             // Disable overscroll effect
             overScrollMode = View.OVER_SCROLL_NEVER
@@ -688,9 +700,8 @@ class MainActivity : AppCompatActivity() {
     
     private fun observeViewModel() {
         viewModel.allApps.observe(this) { apps ->
-            // Debounce updates to avoid excessive recomposition
             keyPressHandler.removeCallbacksAndMessages("update_apps")
-            keyPressHandler.postDelayed({
+            keyPressHandler.post({
                 // Process in background thread to avoid UI blocking
                 lifecycleScope.launch(Dispatchers.Default) {
                     try {
@@ -725,7 +736,7 @@ class MainActivity : AppCompatActivity() {
                         Log.e("MainActivity", "Error processing apps", e)
                     }
                 }
-            }, "update_apps", 100) // 100ms debounce
+            })
         }
     }
     
@@ -772,10 +783,10 @@ class MainActivity : AppCompatActivity() {
         }
         
         // Handle custom key combinations
-        if (preferences.useCustomKeys) {
+        if (preferences.useCustomKeys && !isAccessibilityServiceEnabled() && event != null) {
             customKeyListener?.let { listener ->
                 // Just process the key, don't check return value
-                listener.onKeyEvent(keyCode)
+                listener.onKeyEvent(event)
                 // Don't return true - let the key pass through
             }
         }
@@ -787,12 +798,10 @@ class MainActivity : AppCompatActivity() {
         // Update visual focus on the selected item
         val position = paginatedLayoutManager?.selectedPosition ?: 0
         binding.appsGrid.smoothScrollToPosition(position)
-        
-        // Find the view holder and update focus
-        binding.appsGrid.post {
-            val viewHolder = binding.appsGrid.findViewHolderForAdapterPosition(position)
-            viewHolder?.itemView?.requestFocus()
-        }
+
+        // Подсветка через адаптер (isSelected): requestFocus на ресайклящихся
+        // view приводил к задвоению селектора.
+        appAdapter.setSelectedPosition(position)
     }
     
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
@@ -1060,12 +1069,20 @@ class MainActivity : AppCompatActivity() {
     
     override fun onResume() {
         super.onResume()
+        SystemBarsController.applyHiddenMode(this, HiddenModeStateManager.currentState)
         // Update grid columns if changed in settings
         updateGridColumns()
         // Update custom key listener
         setupCustomKeyListener()
         // Update search visibility
         updateSearchVisibility()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            SystemBarsController.applyHiddenMode(this, HiddenModeStateManager.currentState)
+        }
     }
     
     private fun updateSearchVisibility() {

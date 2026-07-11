@@ -62,7 +62,7 @@ class SettingsActivity : AppCompatActivity() {
         setupIconPacks()  // Setup icon pack selector
         setupHomeScreenSelector()
         setupPermissionsSection()
-        setupDonateSection()  // Setup donate button
+        setupAboutSection()  // GitHub / original project links
         setupAppVersion()
         
         // Check all permissions and auto-scroll if needed
@@ -693,6 +693,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.dndSwitch.isChecked = preferences.enableDndInHiddenMode
         binding.hideAppsSwitch.isChecked = preferences.hideAppsInHiddenMode
         binding.blockScreenshotsSwitch.isChecked = preferences.blockScreenshotsInHiddenMode
+        binding.disableNetworkSwitch.isChecked = preferences.disableNetworkInHiddenMode
         binding.showAppLabelsSwitch.isChecked = preferences.showAppLabels
         binding.showAppSearchSwitch.isChecked = preferences.showAppSearch
         
@@ -772,6 +773,18 @@ class SettingsActivity : AppCompatActivity() {
             }
             Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
             Log.d(TAG, "Block screenshots in hidden mode: $isChecked")
+        }
+
+        // Setup disable network switch
+        binding.disableNetworkSwitch.setOnCheckedChangeListener { _, isChecked ->
+            preferences.disableNetworkInHiddenMode = isChecked
+            val message = if (isChecked) {
+                "Отключение связи в скрытом режиме включено"
+            } else {
+                "Отключение связи в скрытом режиме выключено"
+            }
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+            Log.d(TAG, "Disable network in hidden mode: $isChecked")
         }
         
         // Setup show app labels switch
@@ -1113,18 +1126,21 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
     
-    private fun setupDonateSection() {
-        // Setup donate button click
-        binding.donateButton.setOnClickListener {
-            try {
-                // SBP payment link
-                val sbpUrl = "https://finance.ozon.ru/apps/sbp/ozonbankpay/019a5a84-36a3-7a07-aa7c-a26f247a82f7"
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(sbpUrl))
-                startActivity(intent)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to open donate link", e)
-                Toast.makeText(this, "Не удалось открыть ссылку для доната", Toast.LENGTH_SHORT).show()
-            }
+    private fun setupAboutSection() {
+        binding.myGithubButton.setOnClickListener {
+            openUrl("https://github.com/Niceman228/Better-Launcher")
+        }
+        binding.originalRepoButton.setOnClickListener {
+            openUrl("https://github.com/Linkolnn/-Launcher")
+        }
+    }
+
+    private fun openUrl(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to open link: $url", e)
+            Toast.makeText(this, "Не удалось открыть ссылку", Toast.LENGTH_SHORT).show()
         }
     }
     

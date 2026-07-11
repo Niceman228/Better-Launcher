@@ -77,6 +77,8 @@ class DragDropManager(
         } else {
             Log.e(TAG, "Failed to start drag for item ${currentItem.id}")
             view.alpha = 1.0f // Restore if drag failed
+            draggedItem = null
+            draggedView = null
         }
         
         return result
@@ -158,12 +160,13 @@ class DragDropManager(
         when (val localState = event.localState) {
             is HomeItemModel -> {
                 // This is a move operation within the home screen
-                if (draggedItem?.id == localState.id) {
-                    Log.d(TAG, "Moving item ${localState.id} from ${draggedItem?.cellX},${draggedItem?.cellY} to $cellX, $cellY")
+                val currentDraggedItem = draggedItem
+                if (currentDraggedItem?.id == localState.id) {
+                    Log.d(TAG, "Moving item ${localState.id} from ${currentDraggedItem.cellX},${currentDraggedItem.cellY} to $cellX, $cellY")
                     // Use the draggedItem which has the current position
-                    onItemMoved(draggedItem!!, cellX, cellY)
+                    onItemMoved(currentDraggedItem, cellX, cellY)
                     // Update dragged item with new coordinates
-                    draggedItem = draggedItem?.copy(cellX = cellX, cellY = cellY)
+                    draggedItem = currentDraggedItem.copy(cellX = cellX, cellY = cellY)
                 }
             }
             is AppInfo -> {

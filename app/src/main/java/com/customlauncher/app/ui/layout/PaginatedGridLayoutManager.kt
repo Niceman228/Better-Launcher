@@ -66,11 +66,11 @@ class PaginatedGridLayoutManager(
         val targetPage = position / pageSize
         if (targetPage != currentPage) {
             currentPage = targetPage
+            // removeAllViews() здесь ломал ресайклинг: view уходили мимо
+            // recycler'а и могли залипать с старым состоянием подсветки.
             requestLayout()
-            // Force RecyclerView to update immediately
-            removeAllViews()
         }
-        
+
         selectedPosition = position
     }
     

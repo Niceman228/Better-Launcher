@@ -2,12 +2,17 @@ package com.customlauncher.app.manager
 
 import android.content.Context
 import android.content.Intent
+import android.app.NotificationManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.os.UserManager
 import android.util.Log
 import com.customlauncher.app.LauncherApplication
 import com.customlauncher.app.service.TouchBlockService
-import com.customlauncher.app.service.SensorControlService
 import com.customlauncher.app.service.SystemBlockAccessibilityService
+import com.customlauncher.app.utils.SystemWideStatusBarController
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -17,6 +22,28 @@ import kotlinx.coroutines.flow.StateFlow
  */
 object HiddenModeStateManager {
     private const val TAG = "HiddenModeStateManager"
+    private const val TOGGLE_COOLDOWN_MS = 700L
+    private const val BOOT_CLOSE_APPS_GUARD_MS = 30_000L
+    private const val ENABLE_TOUCH_OVERLAY_BLOCKING = false
+    private const val PREF_PREVIOUS_DND_FILTER = "hidden_mode_previous_dnd_filter"
+    private const val PREF_DND_CHANGED_BY_LAUNCHER = "hidden_mode_dnd_changed_by_launcher"
+    private const val PREF_APPS_HIDDEN_CHANGED_AT = "apps_hidden_changed_at"
+
+    private val transitionLock = Any()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var isTransitioning = false
+    private var pendingState: Boolean? = null
+    private var lastToggleTime = 0L
+
+    private data class HiddenModeSettings(
+        val closeApps: Boolean,
+        val blockTouch: Boolean,
+        val enableDnd: Boolean,
+        val hideApps: Boolean,
+        val blockScreenshots: Boolean,
+        val disableNetwork: Boolean,
+        val preferences: com.customlauncher.app.data.preferences.LauncherPreferences?
+    )
     
     // Observable state flow for reactive updates
     private val _isHiddenMode = MutableStateFlow(false)
@@ -31,6 +58,15 @@ object HiddenModeStateManager {
      * This is the single source of truth for state changes
      */
     fun toggleHiddenMode(context: Context) {
+        val now = SystemClock.elapsedRealtime()
+        synchronized(transitionLock) {
+            if (now - lastToggleTime < TOGGLE_COOLDOWN_MS) {
+                Log.d(TAG, "Ignoring hidden mode toggle inside cooldown window")
+                return
+            }
+            lastToggleTime = now
+        }
+
         val newState = !currentState
         setHiddenMode(context, newState)
     }
@@ -39,111 +75,238 @@ object HiddenModeStateManager {
      * Set hidden mode to specific state
      */
     fun setHiddenMode(context: Context, enabled: Boolean) {
-        Log.d(TAG, "Setting hidden mode: $enabled (was: $currentState)")
-        
-        // Force update even if state seems the same (for sync issues)
-        
-        // Update the state
-        _isHiddenMode.value = enabled
-        
-        // Check user preferences for features
-        val preferences = LauncherApplication.instance.preferences
-        val shouldCloseApps = preferences.closeAppsOnHiddenMode
-        val shouldBlockTouch = preferences.blockTouchInHiddenMode
-        val shouldEnableDnd = preferences.enableDndInHiddenMode
-        val shouldHideApps = preferences.hideAppsInHiddenMode
-        val shouldBlockScreenshots = preferences.blockScreenshotsInHiddenMode
-        
-        // Update preferences - Always save the hidden mode state
-        // The apps_hidden preference represents the hidden mode state itself
-        val prefs = context.getSharedPreferences("launcher_preferences", Context.MODE_PRIVATE)
-        prefs.edit().putBoolean("apps_hidden", enabled).apply()
-        
-        // Note: shouldHideApps setting will be checked by MainActivity/AppViewModel 
-        // to determine whether to actually hide apps visually
-        
-        Log.d(TAG, "Feature settings - Close apps: $shouldCloseApps, Block touch: $shouldBlockTouch, DND: $shouldEnableDnd, Hide apps: $shouldHideApps, Block screenshots: $shouldBlockScreenshots")
-        
-        // Handle touch blocking - use both methods for better coverage
-        if (enabled) {
-            // Close all apps and go to home screen first (if enabled)
-            if (shouldCloseApps) {
-                closeAllAppsAndGoHome(context)
+        val appContext = context.applicationContext
+        synchronized(transitionLock) {
+            if (isTransitioning) {
+                pendingState = enabled
+                Log.d(TAG, "Hidden mode transition in progress, queued state: $enabled")
+                return
             }
-            
-            // Start blocking immediately (if enabled)
-            if (shouldBlockTouch) {
-                // Primary method: AccessibilityService (works system-wide)
-                disableTouchSensor(context)
-                
-                // Secondary method: Overlay service (fallback for home screen)
-                startTouchBlockService(context)
+
+            if (currentState == enabled) {
+                syncStoredState(appContext, enabled, null)
+                SystemWideStatusBarController.applyHiddenMode(appContext, enabled)
+                sendHiddenModeChangedBroadcast(appContext, enabled)
+                Log.d(TAG, "Hidden mode already in requested state: $enabled")
+                return
             }
-            
-            // Enable Do Not Disturb mode (if enabled)
-            if (shouldEnableDnd) {
-                enableDoNotDisturb(context)
+
+            isTransitioning = true
+        }
+
+        try {
+            performSetHiddenMode(appContext, enabled)
+        } finally {
+            val nextState = synchronized(transitionLock) {
+                isTransitioning = false
+                pendingState.also { pendingState = null }
             }
-            
-            // Block screenshots (if enabled)
-            if (shouldBlockScreenshots) {
-                enableScreenshotBlocking(context)
-            }
-        } else {
-            // Optimize exit from hidden mode - do operations asynchronously
-            // to prevent UI freezing
-            
-            // First, update state immediately for responsiveness
-            val handler = android.os.Handler(android.os.Looper.getMainLooper())
-            
-            // Always stop touch blocking when exiting hidden mode
-            if (preferences.blockTouchInHiddenMode) {
-                // Stop AccessibilityService blocking first (immediate)
-                enableTouchSensor(context)
-                
-                // Then stop overlay service
-                handler.post {
-                    stopTouchBlockService(context)
-                }
-            }
-            
-            // Disable DND (if it was enabled when entering hidden mode)
-            // We check the preference to see if DND should have been enabled
-            if (shouldEnableDnd) {
-                handler.postDelayed({
-                    disableDoNotDisturb(context)
-                }, 100)
-            }
-            
-            // Re-enable screenshots (if they were blocked)
-            if (shouldBlockScreenshots) {
-                handler.postDelayed({
-                    disableScreenshotBlocking(context)
-                }, 150)
+
+            if (nextState != null && nextState != currentState) {
+                mainHandler.post { setHiddenMode(appContext, nextState) }
             }
         }
-        
-        // Send broadcast about state change
+    }
+
+    fun forceSetHiddenMode(context: Context, enabled: Boolean) {
+        val appContext = context.applicationContext
+        synchronized(transitionLock) {
+            if (isTransitioning) {
+                pendingState = enabled
+                Log.d(TAG, "Hidden mode transition in progress, force-queued state: $enabled")
+                return
+            }
+
+            isTransitioning = true
+        }
+
+        try {
+            performSetHiddenMode(appContext, enabled)
+        } finally {
+            val nextState = synchronized(transitionLock) {
+                isTransitioning = false
+                pendingState.also { pendingState = null }
+            }
+
+            if (nextState != null && nextState != currentState) {
+                mainHandler.post { forceSetHiddenMode(appContext, nextState) }
+            }
+        }
+    }
+
+    private fun performSetHiddenMode(context: Context, enabled: Boolean) {
+        Log.d(TAG, "Setting hidden mode: $enabled (was: $currentState)")
+
+        _isHiddenMode.value = enabled
+
+        val settings = readHiddenModeSettings(context)
+        val shouldCloseApps = settings.closeApps
+        val shouldBlockTouch = settings.blockTouch
+        val shouldEnableDnd = settings.enableDnd
+        val shouldHideApps = settings.hideApps
+        val shouldBlockScreenshots = settings.blockScreenshots
+        val shouldDisableNetwork = settings.disableNetwork
+
+        syncStoredState(context, enabled, settings.preferences)
+
+        Log.d(TAG, "Feature settings - Close apps: $shouldCloseApps, Block touch: $shouldBlockTouch, DND: $shouldEnableDnd, Hide apps: $shouldHideApps, Block screenshots: $shouldBlockScreenshots, Disable network: $shouldDisableNetwork")
+
+        safely("apply system-wide status bar mode") {
+            SystemWideStatusBarController.applyHiddenMode(context, enabled)
+        }
+
+        if (enabled) {
+            if (shouldCloseApps) {
+                safely("close apps and go home") { closeAllAppsAndGoHome(context) }
+            }
+
+            if (shouldBlockTouch) {
+                safely("request keyboard-safe touch block") { requestAccessibilityTouchBlock(context) }
+                if (ENABLE_TOUCH_OVERLAY_BLOCKING) {
+                    safely("start touch block service") { startTouchBlockService(context) }
+                } else {
+                    Log.w(TAG, "Touch overlay blocking disabled on this build for Qin F22 stability")
+                    safely("stop any stale touch block service") { stopTouchBlockService(context) }
+                }
+            }
+
+            if (shouldEnableDnd) {
+                safely("enable DND") { enableDoNotDisturb(context) }
+            }
+
+            if (shouldBlockScreenshots) {
+                safely("enable screenshot blocking") { enableScreenshotBlocking(context) }
+            }
+
+            if (shouldDisableNetwork) {
+                safely("disable network radios") { NetworkControlManager.disableRadios(context) }
+            }
+        } else {
+            if (shouldBlockTouch) {
+                safely("request keyboard-safe touch unblock") { requestAccessibilityTouchUnblock(context) }
+            }
+            mainHandler.post {
+                safely("stop touch block service") { stopTouchBlockService(context) }
+            }
+
+            if (shouldEnableDnd) {
+                mainHandler.postDelayed({
+                    safely("restore DND") { disableDoNotDisturb(context) }
+                }, 100)
+            }
+
+            if (shouldBlockScreenshots) {
+                mainHandler.postDelayed({
+                    safely("disable screenshot blocking") { disableScreenshotBlocking(context) }
+                }, 150)
+            }
+
+            // Восстанавливаем радио всегда: если снимка нет, вызов — no-op.
+            // Так радио не останутся выключенными, если пользователь
+            // отключил настройку, пока скрытый режим был активен.
+            safely("restore network radios") { NetworkControlManager.restoreRadios(context) }
+        }
+
+        sendHiddenModeChangedBroadcast(context, enabled)
+
+        Log.d(TAG, "Hidden mode set to: $enabled, broadcast sent")
+    }
+
+    private fun syncStoredState(
+        context: Context,
+        enabled: Boolean,
+        preferences: com.customlauncher.app.data.preferences.LauncherPreferences?
+    ) {
+        if (isUserUnlocked(context)) {
+            val committed = context.getSharedPreferences("launcher_preferences", Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("apps_hidden", enabled)
+                .putLong(PREF_APPS_HIDDEN_CHANGED_AT, System.currentTimeMillis())
+                .commit()
+
+            if (!committed) {
+                Log.w(TAG, "Failed to commit apps_hidden=$enabled synchronously")
+            }
+        } else {
+            Log.d(TAG, "Skipping credential-protected apps_hidden write until user unlock")
+        }
+
+        DirectBootStateStore.saveHiddenMode(context, enabled, preferences)
+    }
+
+    private inline fun safely(operation: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to $operation", e)
+        }
+    }
+
+    private fun sendHiddenModeChangedBroadcast(context: Context, enabled: Boolean) {
         val intent = Intent("com.customlauncher.HIDDEN_MODE_CHANGED")
         intent.putExtra("is_hidden", enabled)
-        intent.setPackage(context.packageName) // Restrict to our app
+        intent.setPackage(context.packageName)
         context.sendBroadcast(intent)
-        
-        Log.d(TAG, "Hidden mode set to: $enabled, broadcast sent")
     }
     
     /**
      * Initialize state from preferences
      */
-    fun initializeState() {
-        val preferences = LauncherApplication.instance.preferences
-        
-        // Hidden mode state is independent of hideAppsInHiddenMode setting
-        // We always check appsHidden as it represents the actual hidden mode state
-        val savedState = preferences.appsHidden
+    fun initializeState(context: Context? = null) {
+        val appContext = context?.applicationContext ?: runCatching {
+            LauncherApplication.instance.applicationContext
+        }.getOrNull()
+
+        val savedState = try {
+            if (appContext != null && !isUserUnlocked(appContext)) {
+                DirectBootStateStore.isHiddenModeEnabled(appContext)
+            } else {
+                LauncherApplication.instance.preferences.appsHidden
+            }
+        } catch (e: Exception) {
+            if (appContext != null) {
+                Log.w(TAG, "Falling back to Direct Boot hidden mode state during initializeState", e)
+                DirectBootStateStore.isHiddenModeEnabled(appContext)
+            } else {
+                Log.w(TAG, "Unable to initialize hidden mode state, defaulting to false", e)
+                false
+            }
+        }
         
         _isHiddenMode.value = savedState
         Log.d(TAG, "Initialized hidden mode state: $savedState")
+    }
+
+    fun restorePersistedStateAfterBoot(context: Context, lockedBoot: Boolean) {
+        val directBootState = DirectBootStateStore.isHiddenModeEnabled(context)
+        val savedState = if (lockedBoot) {
+            directBootState
+        } else {
+            try {
+                val credentialState = LauncherApplication.instance.preferences.appsHidden
+                if (credentialState != directBootState) {
+                    Log.d(TAG, "Credential state differs from Direct Boot state after unlock, using Direct Boot state: $directBootState")
+                    syncStoredState(context.applicationContext, directBootState, LauncherApplication.instance.preferences)
+                    directBootState
+                } else {
+                    credentialState
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to read credential protected state, using Direct Boot state", e)
+                directBootState
+            }
+        }
+
+        Log.d(TAG, "Restoring hidden mode after boot. lockedBoot=$lockedBoot, savedState=$savedState")
+
+        if (lockedBoot) {
+            _isHiddenMode.value = savedState
+            sendHiddenModeChangedBroadcast(context.applicationContext, savedState)
+            return
+        }
+
+        _isHiddenMode.value = !savedState
+        setHiddenMode(context.applicationContext, savedState)
     }
     
     /**
@@ -174,20 +337,79 @@ object HiddenModeStateManager {
      * Force refresh the current state
      */
     fun refreshState(context: Context) {
-        val preferences = LauncherApplication.instance.preferences
-        
-        // Hidden mode state should always be synced with the appsHidden preference
-        // regardless of other settings
-        val currentPrefState = preferences.appsHidden
+        val currentPrefState = try {
+            if (isUserUnlocked(context)) {
+                LauncherApplication.instance.preferences.appsHidden
+            } else {
+                DirectBootStateStore.isHiddenModeEnabled(context)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Falling back to Direct Boot state during refreshState", e)
+            DirectBootStateStore.isHiddenModeEnabled(context)
+        }
         
         if (currentPrefState != currentState) {
             Log.d(TAG, "State mismatch detected. Preferences: $currentPrefState, Manager: $currentState")
             setHiddenMode(context, currentPrefState)
         }
     }
+
+    private fun readHiddenModeSettings(context: Context): HiddenModeSettings {
+        return try {
+            if (isUserUnlocked(context)) {
+                val preferences = LauncherApplication.instance.preferences
+                HiddenModeSettings(
+                    closeApps = preferences.closeAppsOnHiddenMode,
+                    blockTouch = preferences.blockTouchInHiddenMode,
+                    enableDnd = preferences.enableDndInHiddenMode,
+                    hideApps = preferences.hideAppsInHiddenMode,
+                    blockScreenshots = preferences.blockScreenshotsInHiddenMode,
+                    disableNetwork = preferences.disableNetworkInHiddenMode,
+                    preferences = preferences
+                )
+            } else {
+                val snapshot = DirectBootStateStore.getFeatureSnapshot(context)
+                HiddenModeSettings(
+                    closeApps = snapshot.closeApps,
+                    blockTouch = snapshot.blockTouch,
+                    enableDnd = snapshot.enableDnd,
+                    hideApps = snapshot.hideApps,
+                    blockScreenshots = snapshot.blockScreenshots,
+                    disableNetwork = snapshot.disableNetwork,
+                    preferences = null
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Falling back to Direct Boot feature snapshot", e)
+            val snapshot = DirectBootStateStore.getFeatureSnapshot(context)
+            HiddenModeSettings(
+                closeApps = snapshot.closeApps,
+                blockTouch = snapshot.blockTouch,
+                enableDnd = snapshot.enableDnd,
+                hideApps = snapshot.hideApps,
+                blockScreenshots = snapshot.blockScreenshots,
+                disableNetwork = snapshot.disableNetwork,
+                preferences = null
+            )
+        }
+    }
+
+    private fun isUserUnlocked(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val userManager = context.getSystemService(Context.USER_SERVICE) as UserManager
+            userManager.isUserUnlocked
+        } else {
+            true
+        }
+    }
     
     private fun closeAllAppsAndGoHome(context: Context) {
         try {
+            if (SystemClock.elapsedRealtime() < BOOT_CLOSE_APPS_GUARD_MS) {
+                Log.d(TAG, "Skipping close apps during early boot guard")
+                return
+            }
+
             Log.d(TAG, "Closing all apps and going to home screen")
             
             val preferences = LauncherApplication.instance.preferences
@@ -277,39 +499,27 @@ object HiddenModeStateManager {
         }
     }
     
-    private fun disableTouchSensor(context: Context) {
-        Log.d(TAG, "Disabling touch sensor")
-        
-        // First try AccessibilityService method
+    private fun requestAccessibilityTouchBlock(context: Context) {
+        Log.d(TAG, "Requesting keyboard-safe touch block")
+
         val accessibilityIntent = Intent(context, SystemBlockAccessibilityService::class.java).apply {
             action = SystemBlockAccessibilityService.ACTION_BLOCK_TOUCHES
         }
-        context.startService(accessibilityIntent)
-        
-        // Also use SensorControlService as backup
-        val sensorIntent = Intent(context, SensorControlService::class.java).apply {
-            action = SensorControlService.ACTION_DISABLE_SENSOR
-        }
-        context.startService(sensorIntent)
+        safely("start accessibility touch block action") { context.startService(accessibilityIntent) }
     }
     
-    private fun enableTouchSensor(context: Context) {
-        // Disable via AccessibilityService
+    private fun requestAccessibilityTouchUnblock(context: Context) {
+        Log.d(TAG, "Requesting keyboard-safe touch unblock")
+
         val accessibilityIntent = Intent(context, SystemBlockAccessibilityService::class.java).apply {
             action = SystemBlockAccessibilityService.ACTION_UNBLOCK_TOUCHES
         }
-        context.startService(accessibilityIntent)
-        
-        // Also stop SensorControlService
-        val sensorIntent = Intent(context, SensorControlService::class.java).apply {
-            action = SensorControlService.ACTION_ENABLE_SENSOR
-        }
-        context.startService(sensorIntent)
+        safely("start accessibility touch unblock action") { context.startService(accessibilityIntent) }
     }
     
     private fun enableDoNotDisturb(context: Context) {
         try {
-            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             
             // Check if we have DND access
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
@@ -322,8 +532,16 @@ object HiddenModeStateManager {
                     return
                 }
                 
+                val prefs = context.getSharedPreferences("launcher_preferences", Context.MODE_PRIVATE)
+                if (!prefs.getBoolean(PREF_DND_CHANGED_BY_LAUNCHER, false)) {
+                    prefs.edit()
+                        .putInt(PREF_PREVIOUS_DND_FILTER, notificationManager.currentInterruptionFilter)
+                        .putBoolean(PREF_DND_CHANGED_BY_LAUNCHER, true)
+                        .apply()
+                }
+
                 // Enable DND - Priority only mode
-                notificationManager.setInterruptionFilter(android.app.NotificationManager.INTERRUPTION_FILTER_PRIORITY)
+                notificationManager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY)
                 Log.d(TAG, "Do Not Disturb enabled")
             }
         } catch (e: Exception) {
@@ -333,13 +551,21 @@ object HiddenModeStateManager {
     
     private fun disableDoNotDisturb(context: Context) {
         try {
-            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
                 if (notificationManager.isNotificationPolicyAccessGranted) {
-                    // Disable DND - All notifications
-                    notificationManager.setInterruptionFilter(android.app.NotificationManager.INTERRUPTION_FILTER_ALL)
-                    Log.d(TAG, "Do Not Disturb disabled")
+                    val prefs = context.getSharedPreferences("launcher_preferences", Context.MODE_PRIVATE)
+                    val previousFilter = prefs.getInt(
+                        PREF_PREVIOUS_DND_FILTER,
+                        NotificationManager.INTERRUPTION_FILTER_ALL
+                    )
+                    notificationManager.setInterruptionFilter(previousFilter)
+                    prefs.edit()
+                        .remove(PREF_PREVIOUS_DND_FILTER)
+                        .putBoolean(PREF_DND_CHANGED_BY_LAUNCHER, false)
+                        .apply()
+                    Log.d(TAG, "Do Not Disturb restored to filter: $previousFilter")
                 }
             }
         } catch (e: Exception) {

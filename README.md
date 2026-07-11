@@ -1,9 +1,40 @@
-# <img src="app/src/icons/app_icon.png" width="40" align="left" alt="ИLauncher Icon"> ИLauncher v4.0
+# <img src="app/src/icons/app_icon.png" width="40" align="left" alt="ИLauncher Icon"> Better Launcher (форк ИLauncher)
 <br clear="left"/>
 
-## 🚀 Версия 4.0 - Стабильный релиз с критическими исправлениями
+> **Форк проекта [ИLauncher](https://github.com/Linkolnn/-Launcher)** от [Linkolnn](https://github.com/Linkolnn), доработанный под кнопочный телефон **Qin F22** (MediaTek MT6739) с упором на производительность на слабом железе.
 
 **ИLauncher** — это современный Android лаунчер, разработанный для кнопочных телефонов (но работает также и на сенсорных смартфонах) и устройств с физическими клавишами. Главная особенность — **скрытый режим**, который позволяет мгновенно спрятать выбранные приложения и заблокировать устройство по комбинации клавиш.
+
+## 🔀 Доработки этого форка
+
+### ⚡ Производительность (Qin F22 / MT6739, 4× Cortex-A53)
+
+Главное меню приложений на слабом железе открывалось до 650 мс на кадр. После оптимизаций шторка открывается мгновенно с готовыми иконками:
+
+| Метрика | Оригинал | Форк |
+|---------|----------|------|
+| p90 кадра | 350 мс | 36 мс |
+| p95 кадра | 650 мс | 113 мс |
+| Janky frames | 78% | ~40% |
+
+Что сделано:
+- **Постоянный каталог приложений** — один скан PackageManager после старта; список (package, component, label, fingerprint) хранится на диске и переживает перезапуск;
+- **Двухуровневый кэш иконок** — память + диск (`files/app_icons`), иконки растеризуются сразу в размер сетки и переживают перезапуск; при старте прогреваются в память, bind получает их синхронно, без плейсхолдеров;
+- **Ограниченный параллелизм** — максимум 2 фоновые загрузки иконок (под 4 слабых A53), одинаковые запросы объединяются;
+- **Первый кадр без IO** — ViewModel живёт на уровне activity, тёплый snapshot публикуется синхронно, шторка рисуется с иконками уже в первом кадре;
+- **Запуск по точному ComponentName** вместо `getLaunchIntentForPackage()` при каждом bind;
+- **Baseline Profile** для старта лаунчера и открытия меню.
+
+### 🐛 Исправления стабильности
+- **Призрак-диалог шторки** — скрытие/показ больше не зависят от анимационных колбэков (на прошивке MTK они теряются); прозрачное окно диалога больше не может застрять и глотать все нажатия;
+- **Самовосстановление состояния** — если флаг «шторка открыта» застрял, лаунчер сам сбрасывает его и переоткрывает меню;
+- переработан скрытый режим и Direct Boot; исправлено задвоение селектора в меню.
+
+### 📱 Функции для кнопочного режима
+- Кнопки вызова и контактов на главном экране (кнопочный режим);
+- Отключение Wi-Fi, Bluetooth и мобильных данных в скрытом режиме (targetSdk 28 ради легаси-API переключения радио);
+- Переиспользуемый Shizuku UserService;
+- Ссылки на форк и оригинальный проект в настройках вместо кнопки доната.
 
 ### ⚠️ ВАЖНО: Рекомендации по установке
 
@@ -167,8 +198,8 @@
 
 ```bash
 # Клонирование репозитория
-git clone https://github.com/yourusername/ilauncher.git
-cd ilauncher
+git clone https://github.com/Niceman228/Better-Launcher.git
+cd Better-Launcher
 
 # Сборка debug версии
 ./gradlew assembleDebug
@@ -432,7 +463,7 @@ adb install app/build/outputs/apk/debug/ИLauncher.apk
 
 ```bash
 # Форк репозитория
-git fork https://github.com/yourusername/ilauncher
+# https://github.com/Niceman228/Better-Launcher
 
 # Создайте ветку для функции
 git checkout -b feature/amazing-feature
@@ -452,21 +483,20 @@ git push origin feature/amazing-feature
 
 ## 🌟 Благодарности
 
+- [Linkolnn](https://github.com/Linkolnn) — автору оригинального [ИLauncher](https://github.com/Linkolnn/-Launcher)
 - Сообществу Android разработчиков
-- Контрибьюторам проекта
-- Пользователям за обратную связь
 - Разработчикам библиотек с открытым кодом
 
 ## 📞 Контакты
 
-- **GitHub Issues:** [Сообщить о проблеме](https://github.com/yourusername/ilauncher/issues)
-- **Discussions:** [Обсуждения](https://github.com/yourusername/ilauncher/discussions)
-- **Email:** ilauncher@example.com
+- **Форк:** [Niceman228/Better-Launcher](https://github.com/Niceman228/Better-Launcher)
+- **Оригинал:** [Linkolnn/-Launcher](https://github.com/Linkolnn/-Launcher)
+- **GitHub Issues:** [Сообщить о проблеме](https://github.com/Niceman228/Better-Launcher/issues)
 
 ---
 
 <p align="center">
   Сделано с ❤️ для сообщества Android
   <br>
-  <strong>ИLauncher v4.0</strong> • © 2025
+  <strong>Better Launcher</strong> — форк <strong>ИLauncher</strong> • © 2026
 </p>

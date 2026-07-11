@@ -29,24 +29,24 @@ class HomeScreenViewPool(
      * Get or create app view from pool
      */
     fun obtainAppView(parent: ViewGroup? = null): View {
-        var view = appViewPool.poll()
-        if (view == null) {
+        val view = appViewPool.poll()
+        return if (view == null) {
             Log.d(TAG, "Creating new app view, pool size: ${appViewPool.size}")
-            view = inflater.inflate(R.layout.item_home_app, parent, false)
+            inflater.inflate(R.layout.item_home_app, parent, false)
         } else {
             Log.d(TAG, "Reusing app view from pool, remaining: ${appViewPool.size}")
+            view
         }
-        return view
     }
     
     /**
      * Get or create widget container from pool
      */
     fun obtainWidgetContainer(parent: ViewGroup? = null): View {
-        var view = widgetContainerPool.poll()
-        if (view == null) {
+        val view = widgetContainerPool.poll()
+        return if (view == null) {
             Log.d(TAG, "Creating new widget container, pool size: ${widgetContainerPool.size}")
-            view = android.widget.FrameLayout(inflater.context).apply {
+            android.widget.FrameLayout(inflater.context).apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
@@ -54,8 +54,8 @@ class HomeScreenViewPool(
             }
         } else {
             Log.d(TAG, "Reusing widget container from pool, remaining: ${widgetContainerPool.size}")
+            view
         }
-        return view
     }
     
     /**

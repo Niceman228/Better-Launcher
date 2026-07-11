@@ -295,8 +295,10 @@ class HomeScreenGridLayout @JvmOverloads constructor(
         }
         
         // Draw focus indicator when using D-pad navigation (both touch and button modes)
-        if (focusedCell != null) {
-            val (x, y) = focusedCell!!
+        focusedCell?.let { (x, y) ->
+            if (!gridConfig.isValidPosition(x, y) || cellWidth == 0 || cellHeight == 0) {
+                return@let
+            }
             val left = x * cellWidth.toFloat()
             val top = y * cellHeight.toFloat()
             val right = left + cellWidth

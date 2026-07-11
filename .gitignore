@@ -32,3 +32,10 @@ release/
 migrate_working_dir/
 *.lock
 *.hprof
+
+app/build/
+.kotlin/
+
+.codex-diagnostics/
+logs/
+
