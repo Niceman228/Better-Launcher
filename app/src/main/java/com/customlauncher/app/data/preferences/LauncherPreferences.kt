@@ -166,6 +166,10 @@ class LauncherPreferences(context: Context) {
     var disableNetworkInHiddenMode: Boolean
         get() = prefs.getBoolean(KEY_DISABLE_NETWORK_IN_HIDDEN, false)  // Default: disabled
         set(value) = prefs.edit().putBoolean(KEY_DISABLE_NETWORK_IN_HIDDEN, value).apply()
+
+    var powerSaveInHiddenMode: Boolean
+        get() = prefs.getBoolean(KEY_POWER_SAVE_IN_HIDDEN, false)  // Default: disabled
+        set(value) = prefs.edit().putBoolean(KEY_POWER_SAVE_IN_HIDDEN, value).apply()
     
     var checkPermissionsOnStartup: Boolean
         get() = prefs.getBoolean(KEY_CHECK_PERMISSIONS, true)  // Default: enabled
@@ -265,6 +269,7 @@ class LauncherPreferences(context: Context) {
         private const val KEY_HIDE_APPS_IN_HIDDEN = "hide_apps_in_hidden"
         private const val KEY_BLOCK_SCREENSHOTS_IN_HIDDEN = "block_screenshots_in_hidden"
         private const val KEY_DISABLE_NETWORK_IN_HIDDEN = "disable_network_in_hidden"
+        private const val KEY_POWER_SAVE_IN_HIDDEN = "power_save_in_hidden"
         private const val KEY_CHECK_PERMISSIONS = "check_permissions_on_startup"
         private const val KEY_BUTTON_PHONE_MODE = "button_phone_mode"
         private const val KEY_BUTTON_PHONE_GRID_SIZE = "button_phone_grid_size"

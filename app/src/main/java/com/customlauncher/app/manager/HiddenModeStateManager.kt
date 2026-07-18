@@ -42,6 +42,7 @@ object HiddenModeStateManager {
         val hideApps: Boolean,
         val blockScreenshots: Boolean,
         val disableNetwork: Boolean,
+        val powerSave: Boolean,
         val preferences: com.customlauncher.app.data.preferences.LauncherPreferences?
     )
     
@@ -146,6 +147,7 @@ object HiddenModeStateManager {
         val shouldHideApps = settings.hideApps
         val shouldBlockScreenshots = settings.blockScreenshots
         val shouldDisableNetwork = settings.disableNetwork
+        val shouldPowerSave = settings.powerSave
 
         syncStoredState(context, enabled, settings.preferences)
 
@@ -181,6 +183,10 @@ object HiddenModeStateManager {
             if (shouldDisableNetwork) {
                 safely("disable network radios") { NetworkControlManager.disableRadios(context) }
             }
+
+            if (shouldPowerSave) {
+                safely("enable battery saver") { NetworkControlManager.enableBatterySaver(context) }
+            }
         } else {
             if (shouldBlockTouch) {
                 safely("request keyboard-safe touch unblock") { requestAccessibilityTouchUnblock(context) }
@@ -205,6 +211,9 @@ object HiddenModeStateManager {
             // Так радио не останутся выключенными, если пользователь
             // отключил настройку, пока скрытый режим был активен.
             safely("restore network radios") { NetworkControlManager.restoreRadios(context) }
+
+            // Аналогично энергосбережению: восстанавливаем всегда, no-op без снимка.
+            safely("restore battery saver") { NetworkControlManager.restoreBatterySaver(context) }
         }
 
         sendHiddenModeChangedBroadcast(context, enabled)
@@ -365,6 +374,7 @@ object HiddenModeStateManager {
                     hideApps = preferences.hideAppsInHiddenMode,
                     blockScreenshots = preferences.blockScreenshotsInHiddenMode,
                     disableNetwork = preferences.disableNetworkInHiddenMode,
+                    powerSave = preferences.powerSaveInHiddenMode,
                     preferences = preferences
                 )
             } else {
@@ -376,6 +386,7 @@ object HiddenModeStateManager {
                     hideApps = snapshot.hideApps,
                     blockScreenshots = snapshot.blockScreenshots,
                     disableNetwork = snapshot.disableNetwork,
+                    powerSave = snapshot.powerSave,
                     preferences = null
                 )
             }
@@ -389,6 +400,7 @@ object HiddenModeStateManager {
                 hideApps = snapshot.hideApps,
                 blockScreenshots = snapshot.blockScreenshots,
                 disableNetwork = snapshot.disableNetwork,
+                powerSave = snapshot.powerSave,
                 preferences = null
             )
         }

@@ -12,6 +12,7 @@ object DirectBootStateStore {
     private const val KEY_HIDE_APPS = "hide_apps_in_hidden"
     private const val KEY_BLOCK_SCREENSHOTS = "block_screenshots_in_hidden"
     private const val KEY_DISABLE_NETWORK = "disable_network_in_hidden"
+    private const val KEY_POWER_SAVE = "power_save_in_hidden"
     private const val KEY_USE_CUSTOM_KEYS = "use_custom_keys"
     private const val KEY_CUSTOM_KEY_COMBINATION = "custom_key_combination"
     private const val KEY_HIDDEN_MODE_CHANGED_AT = "hidden_mode_changed_at"
@@ -22,7 +23,8 @@ object DirectBootStateStore {
         val enableDnd: Boolean,
         val hideApps: Boolean,
         val blockScreenshots: Boolean,
-        val disableNetwork: Boolean
+        val disableNetwork: Boolean,
+        val powerSave: Boolean
     )
 
     data class KeySnapshot(
@@ -44,6 +46,7 @@ object DirectBootStateStore {
                 .putBoolean(KEY_HIDE_APPS, preferences.hideAppsInHiddenMode)
                 .putBoolean(KEY_BLOCK_SCREENSHOTS, preferences.blockScreenshotsInHiddenMode)
                 .putBoolean(KEY_DISABLE_NETWORK, preferences.disableNetworkInHiddenMode)
+                .putBoolean(KEY_POWER_SAVE, preferences.powerSaveInHiddenMode)
                 .putBoolean(KEY_USE_CUSTOM_KEYS, preferences.useCustomKeys)
                 .putString(KEY_CUSTOM_KEY_COMBINATION, preferences.customKeyCombination)
         }
@@ -79,7 +82,8 @@ object DirectBootStateStore {
             enableDnd = prefs.getBoolean(KEY_ENABLE_DND, false),
             hideApps = prefs.getBoolean(KEY_HIDE_APPS, true),
             blockScreenshots = prefs.getBoolean(KEY_BLOCK_SCREENSHOTS, false),
-            disableNetwork = prefs.getBoolean(KEY_DISABLE_NETWORK, false)
+            disableNetwork = prefs.getBoolean(KEY_DISABLE_NETWORK, false),
+            powerSave = prefs.getBoolean(KEY_POWER_SAVE, false)
         )
     }
 

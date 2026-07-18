@@ -694,6 +694,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.hideAppsSwitch.isChecked = preferences.hideAppsInHiddenMode
         binding.blockScreenshotsSwitch.isChecked = preferences.blockScreenshotsInHiddenMode
         binding.disableNetworkSwitch.isChecked = preferences.disableNetworkInHiddenMode
+        binding.powerSaveSwitch.isChecked = preferences.powerSaveInHiddenMode
         binding.showAppLabelsSwitch.isChecked = preferences.showAppLabels
         binding.showAppSearchSwitch.isChecked = preferences.showAppSearch
         
@@ -786,7 +787,19 @@ class SettingsActivity : AppCompatActivity() {
             Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
             Log.d(TAG, "Disable network in hidden mode: $isChecked")
         }
-        
+
+        // Setup power save switch
+        binding.powerSaveSwitch.setOnCheckedChangeListener { _, isChecked ->
+            preferences.powerSaveInHiddenMode = isChecked
+            val message = if (isChecked) {
+                "Энергосбережение в скрытом режиме включено"
+            } else {
+                "Энергосбережение в скрытом режиме выключено"
+            }
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+            Log.d(TAG, "Power save in hidden mode: $isChecked")
+        }
+
         // Setup show app labels switch
         binding.showAppLabelsSwitch.setOnCheckedChangeListener { _, isChecked ->
             preferences.showAppLabels = isChecked

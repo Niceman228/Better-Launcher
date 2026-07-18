@@ -31,6 +31,19 @@
 # Keep service classes
 -keep class com.customlauncher.app.service.** { *; }
 
+# Shizuku: UserService is instantiated by reflection in a separate process and
+# talks over the AIDL Stub. Without these keeps R8 obfuscates them and the
+# UserService fails to start (NPE in LoadedApk.makeApplication) — mobile-data
+# toggling in hidden mode silently stops working on release builds.
+-keep class com.customlauncher.app.UserService { *; }
+-keep class com.customlauncher.app.IUserService { *; }
+-keep class com.customlauncher.app.IUserService$* { *; }
+-keep interface com.customlauncher.app.IUserService { *; }
+-keep class rikka.shizuku.** { *; }
+-keep class moe.shizuku.** { *; }
+-dontwarn rikka.shizuku.**
+-dontwarn moe.shizuku.**
+
 # Keep broadcast receivers
 -keep class com.customlauncher.app.receiver.** { *; }
 

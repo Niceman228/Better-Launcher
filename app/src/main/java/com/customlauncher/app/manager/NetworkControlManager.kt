@@ -31,6 +31,8 @@ object NetworkControlManager {
     private const val KEY_WIFI_WAS_ON = "wifi_was_on"
     private const val KEY_BT_WAS_ON = "bt_was_on"
     private const val KEY_DATA_WAS_ON = "data_was_on"
+    private const val KEY_SAVER_CAPTURED = "saver_captured"
+    private const val KEY_SAVER_WAS_ON = "saver_was_on"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -101,6 +103,59 @@ object NetworkControlManager {
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to restore radios", e)
             }
+        }
+    }
+
+    // ---------- Энергосбережение ----------
+
+    /** Включает режим энергосбережения через Shizuku, сохранив прежнее состояние. */
+    fun enableBatterySaver(context: Context) {
+        val appContext = context.applicationContext
+        scope.launch {
+            try {
+                val prefs = statePrefs(appContext)
+                if (!prefs.getBoolean(KEY_SAVER_CAPTURED, false)) {
+                    val saverOn = isBatterySaverOn(appContext)
+                    prefs.edit()
+                        .putBoolean(KEY_SAVER_CAPTURED, true)
+                        .putBoolean(KEY_SAVER_WAS_ON, saverOn)
+                        .commit()
+                    Log.d(TAG, "Captured battery saver state: $saverOn")
+                }
+                if (!runShizuku(context, "settings put global low_power 1")) {
+                    Log.w(TAG, "Battery saver enable requires Shizuku, skipped")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to enable battery saver", e)
+            }
+        }
+    }
+
+    /** Возвращает энергосбережение в прежнее состояние при выходе из скрытого режима. */
+    fun restoreBatterySaver(context: Context) {
+        val appContext = context.applicationContext
+        scope.launch {
+            try {
+                val prefs = statePrefs(appContext)
+                if (!prefs.getBoolean(KEY_SAVER_CAPTURED, false)) return@launch
+                val wasOn = prefs.getBoolean(KEY_SAVER_WAS_ON, false)
+                // Возвращаем, только если сами меняли: если было выключено — выключаем.
+                runShizuku(context, "settings put global low_power ${if (wasOn) 1 else 0}")
+                prefs.edit().putBoolean(KEY_SAVER_CAPTURED, false).commit()
+                Log.d(TAG, "Restored battery saver state: $wasOn")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to restore battery saver", e)
+            }
+        }
+    }
+
+    private fun isBatterySaverOn(context: Context): Boolean {
+        return try {
+            android.provider.Settings.Global.getInt(
+                context.contentResolver, "low_power", 0
+            ) == 1
+        } catch (e: Exception) {
+            false
         }
     }
 

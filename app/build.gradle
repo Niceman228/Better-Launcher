@@ -55,6 +55,7 @@ android {
         viewBinding true
         aidl true
         dataBinding true
+        buildConfig true
     }
     
     compileOptions {

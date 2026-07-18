@@ -84,7 +84,10 @@ class ShizukuHelper(private val context: Context) {
             ComponentName(context, UserService::class.java)
         ).daemon(false)
             .processNameSuffix("shizuku")
-            .debuggable(true)
+            // Must match the APK: a release (non-debuggable) build cannot start a
+            // UserService process flagged debuggable — the bind fails silently and
+            // svc data toggling never runs. Mirror BuildConfig.DEBUG.
+            .debuggable(com.customlauncher.app.BuildConfig.DEBUG)
             .version(1)
         
         val connection = object : ServiceConnection {
@@ -108,42 +111,60 @@ class ShizukuHelper(private val context: Context) {
     
     // Execute shell command through Shizuku
     suspend fun executeCommand(command: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (!hasShizukuPermission()) {
+            return@withContext Pair(false, "Нет разрешения Shizuku")
+        }
+
+        // Primary path: Shizuku.newProcess. It runs the command directly on the
+        // Shizuku server without spawning a UserService process, so it avoids the
+        // v13.6.0 makeApplication NPE that breaks bindUserService on MediaTek/OEM
+        // firmware (Shizuku issues #2048, #1198) — exactly our Qin F22 / MT6739 case.
+        runCatching { executeViaNewProcess(command) }
+            .getOrNull()
+            ?.let { return@withContext it }
+
+        // Fallback: classic UserService (works where newProcess is unavailable).
         try {
-            if (!hasShizukuPermission()) {
-                return@withContext Pair(false, "Нет разрешения Shizuku")
-            }
-            
-            Log.d(TAG, "Executing command through Shizuku: $command")
-            
+            Log.d(TAG, "newProcess unavailable, falling back to UserService: $command")
             val service = getUserService()
-            if (service == null) {
-                Log.e(TAG, "Failed to get UserService")
-                return@withContext Pair(false, "Не удалось получить Shizuku UserService")
-            }
-            
+                ?: return@withContext Pair(false, "Не удалось получить Shizuku UserService")
             val result = service.executeCommand(command)
-            
-            Log.d(TAG, "Command result: $result")
-            
             if (result.startsWith("ERROR:")) {
-                val error = result.substring(6)
-                Log.e(TAG, "Command error: $error")
-                Pair(false, error)
+                Pair(false, result.substring(6))
             } else {
-                // SUCCESS or actual output means command executed successfully
-                val message = when {
-                    result == "SUCCESS" -> "Команда выполнена успешно"
-                    result.isEmpty() -> "Команда выполнена"
-                    else -> result
-                }
-                Pair(true, message)
+                Pair(true, if (result == "SUCCESS" || result.isEmpty()) "Команда выполнена" else result)
             }
-        } catch (e: RemoteException) {
-            Log.e(TAG, "RemoteException executing command: $command", e)
-            Pair(false, "Ошибка Shizuku: ${e.message}")
         } catch (e: Exception) {
             Log.e(TAG, "Exception executing command: $command", e)
             Pair(false, "Ошибка выполнения: ${e.message}")
+        }
+    }
+
+    // Shizuku.newProcess is a hidden API (@RestrictTo); call it reflectively.
+    // Returns a java.lang.Process (ShizukuRemoteProcess) with the usual streams.
+    private fun executeViaNewProcess(command: String): Pair<Boolean, String> {
+        val method = Shizuku::class.java.getDeclaredMethod(
+            "newProcess",
+            Array<String>::class.java,
+            Array<String>::class.java,
+            String::class.java
+        ).apply { isAccessible = true }
+
+        val process = method.invoke(
+            null,
+            arrayOf("sh", "-c", command),
+            null,
+            null
+        ) as Process
+
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        val error = process.errorStream.bufferedReader().use { it.readText() }
+        val exitCode = process.waitFor()
+
+        return if (exitCode == 0) {
+            Pair(true, output.trim().ifEmpty { "Команда выполнена" })
+        } else {
+            Pair(false, error.trim().ifEmpty { "Exit code: $exitCode" })
         }
     }
     
