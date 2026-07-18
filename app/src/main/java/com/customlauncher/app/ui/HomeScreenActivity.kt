@@ -903,17 +903,18 @@ class HomeScreenActivity : AppCompatActivity() {
         val existingDialog = supportFragmentManager.findFragmentByTag("AppDrawerBottomSheet")
             as? com.customlauncher.app.ui.dialog.AppDrawerBottomSheet
 
-        // Проверяем, не открыт ли уже drawer
+        // Уже открыт и реально на экране - выходим. Любое другое состояние
+        // (застрявший флаг, недобитый фрагмент) лечим пересозданием с нуля.
+        if (existingDialog?.isShowingOnScreen() == true) {
+            Log.d(TAG, "App drawer is already open, ignoring request")
+            isAppDrawerOpen = true
+            return
+        }
         if (isAppDrawerOpen) {
-            // Флаг мог застрять, если анимация скрытия не завершилась: прозрачное окно
-            // диалога тогда глотает все клавиши и тачи. Сверяем с реальным состоянием.
-            if (existingDialog?.isShowingOnScreen() == true) {
-                Log.d(TAG, "App drawer is already open, ignoring request")
-                return
-            }
             Log.w(TAG, "Drawer flagged open but not on screen - self-healing state")
             isAppDrawerOpen = false
         }
+        existingDialog?.dismissAllowingStateLoss()
 
         // Debouncing - игнорируем быстрые повторные вызовы
         val currentTime = System.currentTimeMillis()
@@ -921,13 +922,6 @@ class HomeScreenActivity : AppCompatActivity() {
             Log.d(TAG, "Ignoring rapid drawer open request (debouncing ${DRAWER_OPEN_DEBOUNCE_MS}ms)")
             return
         }
-        if (existingDialog != null) {
-            isAppDrawerOpen = true
-            lastDrawerOpenTime = currentTime
-            existingDialog.reopen()
-            return
-        }
-        
         // Cancel any active widget resize
         widgetResizeManager?.stopResize(save = false)
         
@@ -2034,10 +2028,18 @@ class HomeScreenActivity : AppCompatActivity() {
         // Start listening for widget updates
         appWidgetHost.startListening()
         
-        // Проверяем и сбрасываем флаг меню, если диалог не существует
+        // Watchdog: любой фрагмент шторки, который существует, но реально не на
+        // экране - призрак. Сносим молча при каждом возврате на главный экран.
         val existingDialog = supportFragmentManager.findFragmentByTag("AppDrawerBottomSheet")
-        if (existingDialog == null && isAppDrawerOpen) {
-            Log.d(TAG, "App drawer dialog not found but flag was set, resetting")
+            as? com.customlauncher.app.ui.dialog.AppDrawerBottomSheet
+        if (existingDialog == null) {
+            if (isAppDrawerOpen) {
+                Log.d(TAG, "App drawer dialog not found but flag was set, resetting")
+                isAppDrawerOpen = false
+            }
+        } else if (!existingDialog.isShowingOnScreen()) {
+            Log.w(TAG, "Ghost drawer fragment detected in onResume - dismissing")
+            existingDialog.dismissAllowingStateLoss()
             isAppDrawerOpen = false
         }
         

@@ -63,7 +63,6 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
     // D-pad navigation support
     private lateinit var modeManager: HomeScreenModeManager
     private var focusedPosition: Int = 0
-    private var hiddenForReuse = false
     private var isButtonMode: Boolean = false
     private var currentPopupWindow: PopupWindow? = null
     
@@ -141,7 +140,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                 Log.d(TAG, "Received close drawer broadcast - Hidden mode: $isEnteringHiddenMode, Should close: $shouldCloseApps")
                 
                 if (isEnteringHiddenMode && shouldCloseApps) {
-                    hideForReuse()
+                    closeDrawer()
                 } else {
                     Log.d(TAG, "Ignoring close drawer broadcast - conditions not met")
                 }
@@ -219,7 +218,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
             Log.d(TAG, "Dialog cancel blocked - home screen is disabled")
             return
         }
-        hideForReuse()
+        closeDrawer()
     }
     
     override fun onDismiss(dialog: DialogInterface) {
@@ -267,62 +266,25 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
         }
     }
 
-    /** Keep fragment, adapter and inflated grid alive between drawer openings. */
-    fun reopen() {
-        val drawerDialog = dialog ?: return
-        hiddenForReuse = false
-        drawerDialog.show()
-        binding.root.apply {
-            animate().cancel()
-            translationY = height.coerceAtLeast(resources.displayMetrics.heightPixels).toFloat()
-            visibility = View.VISIBLE
-            animate().translationY(0f).setDuration(220L).withEndAction { finishReopen() }.start()
-            // Animation end callbacks are not guaranteed on this firmware (a cancelled
-            // ViewPropertyAnimator drops withEndAction). Always settle the final state.
-            postDelayed({ finishReopen() }, 300L)
-        }
-        isCancelable = false
-        (activity as? HomeScreenActivity)?.let { SystemBarsController.applyHiddenMode(it, HiddenModeStateManager.currentState) }
-        restartFocusTimer()
-    }
-
-    private fun finishReopen() {
-        if (hiddenForReuse || view == null) return
-        binding.root.translationY = 0f
-        binding.root.visibility = View.VISIBLE
-    }
-
     /** True only when the sheet is actually interactable on screen. */
     fun isShowingOnScreen(): Boolean {
-        if (hiddenForReuse) return false
+        if (!isAdded) return false
         val drawerDialog = dialog ?: return false
-        if (!drawerDialog.isShowing) return false
-        val root = view ?: return false
-        return root.visibility == View.VISIBLE && root.translationY < root.height.coerceAtLeast(1)
+        return drawerDialog.isShowing && view != null
     }
 
-    private fun hideForReuse() {
-        if (hiddenForReuse || !isAdded) return
-        hiddenForReuse = true
+    /**
+     * Real dismissal. The old hide-for-reuse mechanism (dialog.hide() + off-screen
+     * translation) left a transparent focused window swallowing all input whenever
+     * any of its callbacks got lost — this MTK firmware drops them regularly, and
+     * FragmentManager restored the hidden sheet as a ghost after activity relaunch.
+     * dismiss destroys the dialog window, so no ghost can exist by construction.
+     */
+    private fun closeDrawer() {
+        if (!isAdded) return
         stopFocusTimer()
-        appAdapter.setSelectedPosition(androidx.recyclerview.widget.RecyclerView.NO_POSITION)
         currentPopupWindow?.dismiss()
-        binding.root.animate().cancel()
-        binding.root.animate()
-            .translationY(binding.root.height.coerceAtLeast(resources.displayMetrics.heightPixels).toFloat())
-            .setDuration(200L)
-            .withEndAction { finishHide() }
-            .start()
-        // Guaranteed fallback: if the end action is dropped, the transparent dialog
-        // window would keep swallowing every key and touch. Never rely on it alone.
-        binding.root.postDelayed({ finishHide() }, 280L)
-        (activity as? HomeScreenActivity)?.onAppDrawerClosed()
-    }
-
-    private fun finishHide() {
-        if (!hiddenForReuse || view == null) return
-        dialog?.hide()
-        binding.root.translationY = 0f
+        dismissAllowingStateLoss()
     }
     
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -441,7 +403,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
             onDragStarted = { 
                 // Close the bottom sheet when drag starts only if home screen is enabled
                 if (preferences.showHomeScreen) {
-                    hideForReuse()
+                    closeDrawer()
                 }
             }
         )
@@ -486,7 +448,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
         // Setup drag handle for dismissing (only if home screen is enabled)
         binding.dragHandle.setOnClickListener {
             if (preferences.showHomeScreen) {
-                hideForReuse()
+                closeDrawer()
             }
         }
     }
@@ -677,15 +639,9 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
         
         // Setup key listener for the dialog
         dialog?.setOnKeyListener { _, keyCode, event ->
-            // Sheet hidden for reuse: never consume keys. Otherwise a ghost dialog
-            // window would silently eat D-pad and BACK for the whole launcher.
-            if (hiddenForReuse) {
-                finishHide()
-                return@setOnKeyListener false
-            }
             if (event.action == KeyEvent.ACTION_DOWN) {
                 if (keyCode == KeyEvent.KEYCODE_BACK && preferences.showHomeScreen) {
-                    hideForReuse()
+                    closeDrawer()
                     return@setOnKeyListener true
                 }
                 // Handle BACK key specially when home screen is disabled
@@ -734,7 +690,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                     // We're at the top, close the bottom sheet only if home screen is enabled
                     if (preferences.showHomeScreen) {
                         Log.d(TAG, "Reached top of list, closing drawer")
-                        hideForReuse()
+                        closeDrawer()
                     } else {
                         Log.d(TAG, "At top of list, but home screen is disabled")
                     }
@@ -804,7 +760,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                     // At top row, close the drawer only if home screen is enabled
                     if (preferences.showHomeScreen) {
                         Log.d(TAG, "Reached top of page, closing drawer")
-                        hideForReuse()
+                        closeDrawer()
                     } else {
                         Log.d(TAG, "At top of page, but home screen is disabled")
                     }
@@ -969,7 +925,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                 val intent = Intent(requireContext(), AppListActivity::class.java)
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
-                hideForReuse()
+                closeDrawer()
                 return
             }
             
@@ -978,7 +934,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
-                hideForReuse()
+                closeDrawer()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error launching app: ${app.packageName}", e)
