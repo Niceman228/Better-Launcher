@@ -5,7 +5,6 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.Settings
-import android.telephony.TelephonyManager
 import android.util.Log
 import com.customlauncher.app.utils.ShizukuHelper
 import kotlinx.coroutines.CoroutineScope
@@ -14,12 +13,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
- * Отключает Wi-Fi / Bluetooth / мобильные данные при входе в скрытый режим
- * и восстанавливает прежнее состояние при выходе.
+ * Отключает Wi-Fi / Bluetooth и скрывает мобильный слот SystemUI при входе
+ * в скрытый режим, затем восстанавливает прежнее состояние при выходе.
  *
  * Основной путь — команды `svc` через Shizuku (работают на всех версиях Android).
  * Fallback без Shizuku: WifiManager (до Android 10) и BluetoothAdapter (до Android 13).
- * Мобильные данные без Shizuku переключить нельзя — публичного API нет.
+ * Мобильные данные намеренно остаются включёнными.
  *
  * Состояние радиомодулей сохраняется в device-protected storage, чтобы
  * восстановление работало и после перезагрузки до разблокировки.
@@ -59,21 +58,19 @@ object NetworkControlManager {
                 if (!prefs.getBoolean(KEY_CAPTURED, false)) {
                     val wifiOn = isWifiEnabled(appContext)
                     val btOn = isBluetoothEnabled(appContext)
-                    val dataOn = isMobileDataEnabled(appContext)
-
                     prefs.edit()
                         .putBoolean(KEY_CAPTURED, true)
                         .putBoolean(KEY_WIFI_WAS_ON, wifiOn)
                         .putBoolean(KEY_BT_WAS_ON, btOn)
-                        .putBoolean(KEY_DATA_WAS_ON, dataOn)
+                        .remove(KEY_DATA_WAS_ON)
                         .commit()
 
-                    Log.d(TAG, "Captured radio states: wifi=$wifiOn, bt=$btOn, data=$dataOn")
+                    Log.d(TAG, "Captured radio states: wifi=$wifiOn, bt=$btOn")
                 }
 
                 setWifi(appContext, false)
                 setBluetooth(appContext, false)
-                setMobileData(appContext, false)
+                MobileStatusIconController.hideMobileSlot(appContext)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to disable radios", e)
             }
@@ -86,20 +83,28 @@ object NetworkControlManager {
             try {
                 val prefs = statePrefs(appContext)
                 if (!prefs.getBoolean(KEY_CAPTURED, false)) {
+                    MobileStatusIconController.restoreMobileSlot(appContext)
                     Log.d(TAG, "No captured radio states, nothing to restore")
                     return@launch
                 }
 
                 val wifiWasOn = prefs.getBoolean(KEY_WIFI_WAS_ON, false)
                 val btWasOn = prefs.getBoolean(KEY_BT_WAS_ON, false)
-                val dataWasOn = prefs.getBoolean(KEY_DATA_WAS_ON, false)
+                // Compatibility with version 5.0: if it disabled mobile data and
+                // left an active snapshot, restore it once and retire the key.
+                val restoreLegacyMobileData = prefs.contains(KEY_DATA_WAS_ON) &&
+                    prefs.getBoolean(KEY_DATA_WAS_ON, false)
 
                 if (wifiWasOn) setWifi(appContext, true)
                 if (btWasOn) setBluetooth(appContext, true)
-                if (dataWasOn) setMobileData(appContext, true)
+                if (restoreLegacyMobileData) setMobileDataForLegacyRestore(appContext)
+                MobileStatusIconController.restoreMobileSlot(appContext)
 
-                prefs.edit().putBoolean(KEY_CAPTURED, false).commit()
-                Log.d(TAG, "Restored radio states: wifi=$wifiWasOn, bt=$btWasOn, data=$dataWasOn")
+                prefs.edit()
+                    .putBoolean(KEY_CAPTURED, false)
+                    .remove(KEY_DATA_WAS_ON)
+                    .commit()
+                Log.d(TAG, "Restored radio states: wifi=$wifiWasOn, bt=$btWasOn, legacyData=$restoreLegacyMobileData")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to restore radios", e)
             }
@@ -179,22 +184,6 @@ object NetworkControlManager {
         }
     }
 
-    private fun isMobileDataEnabled(context: Context): Boolean {
-        // Сначала глобальная настройка (не требует разрешений),
-        // затем TelephonyManager (может требовать READ_PHONE_STATE).
-        try {
-            return Settings.Global.getInt(context.contentResolver, "mobile_data", -1) == 1
-        } catch (e: Exception) {
-            // ignore
-        }
-        return try {
-            val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) tm?.isDataEnabled == true else false
-        } catch (e: Exception) {
-            false
-        }
-    }
-
     // ---------- Переключение ----------
 
     private suspend fun setWifi(context: Context, enabled: Boolean) {
@@ -237,10 +226,9 @@ object NetworkControlManager {
         }
     }
 
-    private suspend fun setMobileData(context: Context, enabled: Boolean) {
-        val arg = if (enabled) "enable" else "disable"
-        if (!runShizuku(context, "svc data $arg")) {
-            Log.w(TAG, "Mobile data toggle requires Shizuku, skipped")
+    private suspend fun setMobileDataForLegacyRestore(context: Context) {
+        if (!runShizuku(context, "svc data enable")) {
+            Log.w(TAG, "Unable to restore mobile data disabled by an earlier version")
         }
     }
 

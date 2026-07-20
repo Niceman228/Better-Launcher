@@ -29,6 +29,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.cancel
+import androidx.annotation.MainThread
 
 /**
  * Adapter for displaying items on the home screen grid
@@ -77,6 +78,7 @@ class HomeScreenAdapter(
     /**
      * Update displayed items
      */
+    @MainThread
     fun submitList(newItems: List<HomeItemModel>, animate: Boolean = false) {
         PerformanceMonitor.measureTime("submitList") {
             Log.d(TAG, "Updating items, count: ${newItems.size}, animate: $animate")
@@ -104,34 +106,26 @@ class HomeScreenAdapter(
                 return@measureTime
             }
             
-            // Otherwise do full refresh
-            // Batch updates to prevent multiple visual refreshes
-            gridLayout.post {
-                // Always clear completely first to prevent duplicates when switching modes
-                clearAllViews()
-                items.clear()
-                
-                // If list is empty, we're done
-                if (newItems.isEmpty()) {
-                    Log.d(TAG, "Empty item list, grid cleared")
-                    return@post
-                }
-                
-                // Add all new items
-                items.addAll(newItems)
-                
-                // Add views to grid in a single batch
-                items.forEach { item ->
-                    try {
-                        addItemToGrid(item, animate)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error adding item ${item.id} to grid", e)
-                    }
-                }
-                
-                Log.d(TAG, "Grid updated with ${items.size} items")
-                Log.d(TAG, "View pool stats: ${viewPool.getPoolStats()}")
+            // All call sites render on the main thread. Applying immediately keeps
+            // older posted snapshots from overtaking a newer Room result.
+            clearAllViews()
+
+            if (newItems.isEmpty()) {
+                Log.d(TAG, "Empty item list, grid cleared")
+                return@measureTime
             }
+
+            items.addAll(newItems)
+            items.forEach { item ->
+                try {
+                    addItemToGrid(item, animate)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error adding item ${item.id} to grid", e)
+                }
+            }
+
+            Log.d(TAG, "Grid updated with ${items.size} items, ids=${items.map { it.id }}")
+            Log.d(TAG, "View pool stats: ${viewPool.getPoolStats()}")
         }
     }
     
@@ -927,6 +921,7 @@ class HomeScreenAdapter(
         
         gridLayout.removeAllViews()
         itemViews.clear()
+        items.clear()
         
         // Clear lazy loaded widgets
         lazyWidgetLoader?.clearAll()

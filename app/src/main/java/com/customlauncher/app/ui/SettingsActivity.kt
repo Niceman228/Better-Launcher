@@ -29,6 +29,8 @@ import com.customlauncher.app.ui.adapter.IconPackAdapter
 import com.customlauncher.app.utils.IconPackManager
 import com.customlauncher.app.data.model.IconPack
 import com.customlauncher.app.manager.HomeScreenModeManager
+import com.customlauncher.app.manager.HiddenModeStateManager
+import com.customlauncher.app.manager.NetworkControlManager
 
 class SettingsActivity : AppCompatActivity() {
     
@@ -779,13 +781,24 @@ class SettingsActivity : AppCompatActivity() {
         // Setup disable network switch
         binding.disableNetworkSwitch.setOnCheckedChangeListener { _, isChecked ->
             preferences.disableNetworkInHiddenMode = isChecked
+            if (HiddenModeStateManager.currentState) {
+                if (isChecked) {
+                    NetworkControlManager.disableRadios(this)
+                } else {
+                    NetworkControlManager.restoreRadios(this)
+                }
+            }
             val message = if (isChecked) {
-                "Отключение связи в скрытом режиме включено"
+                if (com.customlauncher.app.manager.MobileStatusIconController.hasWriteSecureSettings(this)) {
+                    "Wi-Fi и Bluetooth будут отключены, мобильная сеть скрыта"
+                } else {
+                    "Для скрытия сети выдайте WRITE_SECURE_SETTINGS через ADB"
+                }
             } else {
-                "Отключение связи в скрытом режиме выключено"
+                "Управление связью в скрытом режиме выключено"
             }
             Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
-            Log.d(TAG, "Disable network in hidden mode: $isChecked")
+            Log.d(TAG, "Hidden network privacy: $isChecked")
         }
 
         // Setup power save switch

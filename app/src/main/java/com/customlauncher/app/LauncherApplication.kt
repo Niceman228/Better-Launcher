@@ -206,19 +206,14 @@ class LauncherApplication : Application() {
             
             if (savedVersionCode != -1 && savedVersionCode < currentVersionCode) {
                 Log.d("LauncherApplication", "App updated from version $savedVersionCode to $currentVersionCode")
-                
-                // Сбрасываем состояние accessibility service после обновления
-                CoroutineScope(Dispatchers.Main).launch {
-                    delay(3000) // Ждем стабилизации системы
-                    
-                    // Переинициализируем скрытый режим если он был включен
-                    if (preferences.appsHidden) {
-                        Log.d("LauncherApplication", "Reinitializing hidden mode after update")
-                        HiddenModeStateManager.restorePersistedStateAfterBoot(
-                            this@LauncherApplication,
-                            lockedBoot = false
-                        )
-                    }
+
+                // Updating kills and reconnects the accessibility service. Keeping
+                // hidden mode active across that gap can leave no component able
+                // to receive the escape key combination. Upgrades therefore fail
+                // open and restore every hidden-mode side effect immediately.
+                if (preferences.appsHidden || DirectBootStateStore.isHiddenModeEnabled(this)) {
+                    Log.w("LauncherApplication", "Exiting hidden mode after update for safety")
+                    HiddenModeStateManager.forceSetHiddenMode(this, false)
                 }
             }
             

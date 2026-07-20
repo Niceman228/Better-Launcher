@@ -964,7 +964,7 @@
                     android:alpha="0.3"
                     android:layout_marginVertical="12dp" />
 
-                <!-- Disable network radios -->
+                <!-- Disable Wi-Fi/Bluetooth and hide mobile status slot -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -981,14 +981,14 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Отключать связь"
+                            android:text="Отключать связь и скрывать сеть"
                             android:textColor="@color/text_white"
                             android:textSize="14sp" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Выключает Wi-Fi, Bluetooth и мобильный интернет в скрытом режиме, включает обратно при выходе (для моб. интернета нужен Shizuku)"
+                            android:text="В скрытом режиме выключает Wi-Fi и Bluetooth. Мобильный интернет остаётся включён, но палочки сигнала и 3G/4G/LTE скрываются. Для скрытия нужно один раз выдать приложению WRITE_SECURE_SETTINGS через ADB"
                             android:textColor="@color/text_gray"
                             android:textSize="12sp"
                             android:layout_marginTop="4dp" />

@@ -79,7 +79,6 @@ class HomeScreenActivity : AppCompatActivity() {
     private var lastHiddenState: Boolean? = null
     private var lastUpdateTime = 0L
     private var isAppDrawerOpen = false // Prevent multiple drawer instances
-    private var cachedHomeItems: List<HomeItemModel> = emptyList()
     
     // Track settings for change detection
     private var lastGridColumnCount: Int = 0
@@ -887,7 +886,9 @@ class HomeScreenActivity : AppCompatActivity() {
             // Always reload items when visibility changes to ensure correct filtering
             // Use Main context to avoid concurrent modification
             withContext(Dispatchers.Main) {
-                if (cachedHomeItems.isNotEmpty()) applyCachedHomeVisibility() else loadHomeScreenItems()
+                // Room is the source of truth. A shortcut can be added while the
+                // activity is paused, so an in-memory snapshot is unsafe here.
+                loadHomeScreenItems("visibility_changed")
                 
                 // Force UI refresh on Android 16+ only once
                 if (Build.VERSION.SDK_INT >= 35) {
@@ -967,11 +968,11 @@ class HomeScreenActivity : AppCompatActivity() {
         // Don't clear focus in touch mode - user might be using physical keyboard
     }
     
-    private fun loadHomeScreenItems() {
+    private fun loadHomeScreenItems(reason: String = "unspecified") {
         // Prevent concurrent loading
         if (isLoadingItems) {
             pendingHomeReload = true
-            Log.d(TAG, "Already loading items, queued pending reload")
+            Log.d(TAG, "Home reload queued: reason=$reason")
             return
         }
         
@@ -981,6 +982,7 @@ class HomeScreenActivity : AppCompatActivity() {
             try {
                 withContext(Dispatchers.IO) {
                     val allItems = repository.getAllItems()
+                    Log.d(TAG, "Home reload started: reason=$reason, roomIds=${allItems.map { it.id }}")
                     
                     // Filter hidden apps if needed
                     val filteredItems = filterHiddenApps(allItems)
@@ -1021,12 +1023,12 @@ class HomeScreenActivity : AppCompatActivity() {
                     val finalItems = cleanedItems.sortedBy { it.id }
 
                     withContext(Dispatchers.Main) {
-                        cachedHomeItems = allItems
                         Log.d(TAG, "Loaded ${finalItems.size} items from database (filtered from ${allItems.size}, removed ${itemsToRemoveFromDb.size} duplicates)")
 
                         // Separate bottom bar items from regular grid items
                         val bottomBarItems = finalItems.filter { it.cellY == -1 } // Special Y for bottom bar
                         val gridItems = finalItems.filter { it.cellY != -1 }
+                        Log.d(TAG, "Home render: reason=$reason, gridIds=${gridItems.map { it.id }}, bottomBarIds=${bottomBarItems.map { it.id }}")
                         
                         // Load bottom bar icons
                         loadBottomBarIcons(bottomBarItems)
@@ -1055,23 +1057,10 @@ class HomeScreenActivity : AppCompatActivity() {
                 isLoadingItems = false
                 if (pendingHomeReload && !isFinishing && !isDestroyed) {
                     pendingHomeReload = false
-                    loadHomeScreenItems()
+                    loadHomeScreenItems("pending_reload")
                 }
             }
         }
-    }
-
-    private fun applyCachedHomeVisibility() {
-        if (cachedHomeItems.isEmpty() || !::adapter.isInitialized) return
-        val filtered = filterHiddenApps(cachedHomeItems)
-        val bottomBarItems = filtered.filter { it.cellY == -1 }
-        val gridItems = filtered.filter { it.cellY != -1 }.sortedBy { it.id }
-        loadBottomBarIcons(bottomBarItems)
-        val currentHiddenState = HiddenModeStateManager.currentState
-        val shouldAnimate = previousHiddenState == true && !currentHiddenState && preferences.hideAppsInHiddenMode
-        if (shouldAnimate) adapter.submitListAnimated(gridItems) else adapter.submitList(gridItems)
-        previousHiddenState = currentHiddenState
-        focusManager.updateItems(gridItems)
     }
     
     private fun filterHiddenApps(items: List<HomeItemModel>): List<HomeItemModel> {
@@ -2125,6 +2114,9 @@ class HomeScreenActivity : AppCompatActivity() {
         
         // Refresh state
         updateVisibility()
+        // Always reconcile from Room on resume, even when updateVisibility() is
+        // debounced because the hidden-mode state did not change.
+        loadHomeScreenItems("on_resume")
         
         // Setup custom key listener for hidden mode toggle
         setupCustomKeyListener()
@@ -2182,7 +2174,7 @@ class HomeScreenActivity : AppCompatActivity() {
             // Check if adapter is empty and reload items if needed
             if (adapter.getItemCount() == 0) {
                 Log.d(TAG, "No items on home screen, reloading...")
-                loadHomeScreenItems()
+                loadHomeScreenItems("empty_adapter_on_resume")
             }
         }
     }
@@ -2244,7 +2236,11 @@ class HomeScreenActivity : AppCompatActivity() {
     private fun isAccessibilityServiceEnabled(): Boolean {
         val service = "$packageName/${SystemBlockAccessibilityService::class.java.canonicalName}"
         val enabledServices = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
-        return enabledServices?.contains(service) == true
+        // A configured service can remain listed after its process/binder died.
+        // In that state it cannot receive the escape key combination, so Home
+        // must keep the local listener active as a fail-safe.
+        return enabledServices?.contains(service) == true &&
+            SystemBlockAccessibilityService.instance != null
     }
     
     private fun toggleHiddenMode() {
@@ -2438,6 +2434,9 @@ class HomeScreenActivity : AppCompatActivity() {
                 
                 // Add the item directly with animation instead of reloading everything
                 adapter.addItemAnimated(savedItem)
+                // Reconcile with Room immediately. This also keeps screen-off/on
+                // restoration from ever using a stale in-memory list.
+                loadHomeScreenItems("shortcut_added")
             }
         }
     }
