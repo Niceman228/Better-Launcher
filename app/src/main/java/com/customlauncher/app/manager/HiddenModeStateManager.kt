@@ -163,11 +163,18 @@ object HiddenModeStateManager {
             }
 
             if (shouldBlockTouch) {
-                safely("request keyboard-safe touch block") { requestAccessibilityTouchBlock(context) }
                 if (ENABLE_TOUCH_OVERLAY_BLOCKING) {
+                    safely("request keyboard-safe touch block") { requestAccessibilityTouchBlock(context) }
                     safely("start touch block service") { startTouchBlockService(context) }
                 } else {
-                    Log.w(TAG, "Touch overlay blocking disabled on this build for Qin F22 stability")
+                    // On Qin/MTK a TYPE_ACCESSIBILITY_OVERLAY marked NOT_FOCUSABLE
+                    // still captures most keypad events from applications below it.
+                    // Remove both implementations instead of leaving the
+                    // accessibility overlay active.
+                    Log.w(TAG, "Touch overlays disabled on this build for Qin F22 keypad stability")
+                    safely("remove stale accessibility touch block") {
+                        requestAccessibilityTouchUnblock(context)
+                    }
                     safely("stop any stale touch block service") { stopTouchBlockService(context) }
                 }
             }
