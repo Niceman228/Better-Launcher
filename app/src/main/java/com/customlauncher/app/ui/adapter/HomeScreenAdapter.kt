@@ -464,6 +464,16 @@ class HomeScreenAdapter(
         if (gridLayout.addItemAtPosition(view, item.cellX, item.cellY, item.spanX, item.spanY)) {
             itemViews[item.id] = view
             view.tag = item
+
+            // A pooled/recreated view must derive its visual state from the
+            // adapter's source of truth. Never inherit a stale background.
+            val itemPosition = items.indexOfFirst { it.id == item.id }
+            val selected = isButtonMode && itemPosition == focusedPosition
+            view.isSelected = selected
+            view.setBackgroundResource(
+                if (isButtonMode) R.drawable.bg_item_selector_button_mode
+                else android.R.color.transparent
+            )
             
             if (animate) {
                 // Smooth fade in animation with scale
@@ -1043,11 +1053,10 @@ class HomeScreenAdapter(
                 // Remove focus highlight
                 view.isSelected = false
                 if (isButtonMode) {
-                    // Animate focus out
-                    val fadeOut = android.view.animation.AnimationUtils.loadAnimation(context, R.anim.focus_scale_out)
-                    view.startAnimation(fadeOut)
-                    // Remove focus background
-                    view.setBackgroundResource(R.drawable.bg_item_normal)
+                    view.clearAnimation()
+                    view.setBackgroundResource(R.drawable.bg_item_selector_button_mode)
+                    view.scaleX = 1f
+                    view.scaleY = 1f
                 } else {
                     // Don't set background in touch mode to avoid focus highlight
                     view.background = null
@@ -1062,17 +1071,11 @@ class HomeScreenAdapter(
                 // Add focus highlight
                 view.isSelected = true
                 if (isButtonMode) {
-                    // Apply focus background
                     view.setBackgroundResource(R.drawable.bg_item_selector_button_mode)
-                    // Animate focus in
-                    val fadeIn = android.view.animation.AnimationUtils.loadAnimation(context, R.anim.focus_scale_in)
-                    view.startAnimation(fadeIn)
-                    // Ensure the view maintains its scale after animation
-                    view.scaleX = 1.05f
-                    view.scaleY = 1.05f
+                    view.clearAnimation()
+                    view.scaleX = 1f
+                    view.scaleY = 1f
                 }
-                // Request focus on the view
-                view.requestFocus()
             }
         }
         

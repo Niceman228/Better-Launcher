@@ -44,7 +44,6 @@ object IconCache {
     private val loadSlots = Semaphore(2)
     private val inFlight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Bitmap>>()
     @Volatile private var iconPackManager: IconPackManager? = null
-    private val startupPreloadReady = kotlinx.coroutines.CompletableDeferred<Unit>()
     
     fun getCachedIcon(cacheKey: String): Bitmap? {
         val bitmap = memoryCache.get(cacheKey)
@@ -69,47 +68,6 @@ object IconCache {
         return memoryCache.get(key)?.let { BitmapDrawable(context.resources, it) }
     }
 
-    /** Decode persisted icons before drawer opens. Existing apps then bind with no job or UI update. */
-    suspend fun preload(context: Context, apps: List<AppInfo>, targetSizes: Set<Int>) = withContext(Dispatchers.IO) {
-        var loaded = 0
-        for (app in apps) for (size in targetSizes) {
-            val key = buildCacheKey(app.packageName, app.componentName, size, app.packageFingerprint)
-            if (memoryCache.get(key) != null) continue
-            val persistent = persistentFile(context, key)
-            val legacy = legacyFile(context, key)
-            val source = when {
-                persistent.exists() -> persistent
-                legacy.exists() -> legacy
-                else -> null
-            } ?: continue
-            BitmapFactory.decodeFile(source.path)?.let { bitmap ->
-                bitmap.prepareToDraw()
-                putIcon(key, bitmap)
-                loaded++
-                if (source == legacy) runCatching {
-                    persistent.parentFile?.mkdirs()
-                    source.copyTo(persistent, overwrite = true)
-                    source.delete()
-                }
-            }
-        }
-        android.util.Log.d("AppCatalogPerf", "icon-preload loaded=$loaded memory=${memoryCache.size()}KB")
-    }
-
-    suspend fun preloadForStartup(context: Context, apps: List<AppInfo>, targetSizes: Set<Int>) {
-        try {
-            preload(context, apps, targetSizes)
-        } finally {
-            startupPreloadReady.complete(Unit)
-        }
-    }
-
-    suspend fun awaitStartupPreload() {
-        startupPreloadReady.await()
-    }
-
-    fun isStartupPreloadComplete(): Boolean = startupPreloadReady.isCompleted
-    
     /**
      * Get cache statistics for debugging
      */
@@ -152,12 +110,12 @@ object IconCache {
 
             val diskFile = persistentFile(context, cacheKey)
             val legacyFile = legacyFile(context, cacheKey)
-            BitmapFactory.decodeFile(diskFile.path)?.let {
+            if (diskFile.exists()) BitmapFactory.decodeFile(diskFile.path)?.let {
                 it.prepareToDraw()
                 putIcon(cacheKey, it)
                 return@withContext BitmapDrawable(context.resources, it)
             }
-            BitmapFactory.decodeFile(legacyFile.path)?.let {
+            if (legacyFile.exists()) BitmapFactory.decodeFile(legacyFile.path)?.let {
                 it.prepareToDraw()
                 putIcon(cacheKey, it)
                 runCatching { diskFile.parentFile?.mkdirs(); legacyFile.copyTo(diskFile, true); legacyFile.delete() }

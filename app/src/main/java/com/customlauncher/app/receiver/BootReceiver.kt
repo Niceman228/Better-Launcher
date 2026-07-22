@@ -132,8 +132,12 @@ class BootReceiver : BroadcastReceiver() {
         }
 
         lastHomeStartTime = now
-        val homeIntent = Intent(context, HomeScreenActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+            setClass(context, HomeScreenActivity::class.java)
+            addCategory(Intent.CATEGORY_HOME)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         context.startActivity(homeIntent)
     }

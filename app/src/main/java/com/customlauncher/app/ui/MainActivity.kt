@@ -724,7 +724,13 @@ class MainActivity : AppCompatActivity() {
                             try {
                                 // Only update if activity is still active
                                 if (!isFinishing && !isDestroyed) {
-                                    appAdapter.submitList(appsToShow)
+                                    appAdapter.submitList(appsToShow) {
+                                        if (preferences.buttonPhoneMode && appsToShow.isNotEmpty()) {
+                                            appAdapter.setSelectedPosition(
+                                                paginatedLayoutManager?.selectedPosition ?: 0
+                                            )
+                                        }
+                                    }
                                 } else {
                                     Log.d("MainActivity", "Activity is finishing, skipping update")
                                 }

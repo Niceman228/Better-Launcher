@@ -19,9 +19,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.SupervisorJob
-import com.customlauncher.app.data.model.GridConfiguration
-import com.customlauncher.app.utils.AdaptiveSizeCalculator
-import com.customlauncher.app.utils.IconCache
 import java.util.concurrent.atomic.AtomicBoolean
 
 class LauncherApplication : Application() {
@@ -102,8 +99,6 @@ class LauncherApplication : Application() {
         if (!credentialWorkStarted.compareAndSet(false, true)) return
 
         applicationScope.launch {
-            val cached = runCatching { repository.getAllInstalledApps() }.getOrDefault(emptyList())
-            IconCache.preloadForStartup(this@LauncherApplication, cached, currentMenuIconSizes())
             runCatching { repository.refreshCatalog() }
         }
 
@@ -243,17 +238,4 @@ class LauncherApplication : Application() {
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val credentialWorkStarted = AtomicBoolean(false)
 
-    private fun currentMenuIconSizes(): Set<Int> {
-        val configs = mutableSetOf<GridConfiguration>()
-        val columns = preferences.gridColumnCount.takeIf { it > 0 } ?: 4
-        configs += GridConfiguration(columns, when (columns) { 3 -> 5; 4 -> 6; 5 -> 7; else -> 6 }, false)
-        if (preferences.hasButtonGridSelection && preferences.buttonPhoneGridSize.isNotEmpty()) {
-            val (cols, rows) = when (preferences.buttonPhoneGridSize) {
-                "3x3" -> 3 to 3; "3x4" -> 3 to 4; "3x5" -> 3 to 5; "4x5" -> 4 to 5
-                else -> 4 to 5
-            }
-            configs += GridConfiguration(cols, rows, preferences.buttonPhoneMode)
-        }
-        return configs.map { AdaptiveSizeCalculator.calculateIconSize(this, it) }.toSet()
-    }
 }

@@ -38,14 +38,13 @@ class AppViewModel : ViewModel() {
     private var saveJob: Job? = null
     
     init {
-        // First-frame path: catalog snapshot and preloaded icons are ready right after
-        // startup, so the very first drawer open renders without an IO round trip.
+        // Publish the catalog immediately. Icons are independent and load lazily;
+        // waiting for every PNG to decode made the drawer appear frozen on MT6739.
         publishWarmSnapshot()
         loadApps()
     }
 
     private fun publishWarmSnapshot() {
-        if (!IconCache.isStartupPreloadComplete()) return
         val apps = repository.warmCatalog()
         if (apps.isEmpty()) return
         val (allList, visibleList, hiddenList) = partitionWithSelection(apps)
@@ -95,9 +94,6 @@ class AppViewModel : ViewModel() {
         loadJob = viewModelScope.launch(Dispatchers.IO) {
             val started = android.os.SystemClock.elapsedRealtime()
             try {
-                // Never publish known apps before their persisted icons are in memory.
-                // New/updated apps are absent from disk and still load lazily.
-                IconCache.awaitStartupPreload()
                 val apps = repository.getAllInstalledApps()
                 if (!isActive) return@launch
                 val (allList, visibleList, hiddenList) = partitionWithSelection(apps)

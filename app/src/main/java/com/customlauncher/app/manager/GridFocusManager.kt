@@ -27,9 +27,9 @@ class GridFocusManager(
         private set
     
     // Current focused row and column (for grid navigation)
-    var focusedRow: Int = 0
+    var focusedRow: Int = -1
         private set
-    var focusedColumn: Int = 0
+    var focusedColumn: Int = -1
         private set
     
     // List of items in the grid
@@ -94,6 +94,17 @@ class GridFocusManager(
             // Reset focus if necessary
             if (focusedPosition >= items.size) {
                 focusedPosition = if (items.isNotEmpty()) 0 else POSITION_NONE
+            }
+
+            // Items commonly arrive after requestInitialFocus() during activity
+            // startup. Resolve the pending grid cell now and notify both visual
+            // consumers; otherwise the adapter never receives a focused item.
+            if (focusedPosition == POSITION_NONE && focusedRow >= 0 && focusedColumn >= 0) {
+                val item = findItemAt(focusedRow, focusedColumn)
+                if (item != null) {
+                    focusedPosition = items.indexOf(item)
+                    focusChangeListener?.onFocusChanged(POSITION_NONE, focusedPosition, item)
+                }
             }
         } else {
             Log.d(TAG, "Items unchanged, skipping update")
@@ -448,6 +459,7 @@ class GridFocusManager(
         
         val oldRow = focusedRow
         val oldCol = focusedColumn
+        val oldPosition = focusedPosition
         
         focusedRow = validRow
         focusedColumn = validCol
@@ -455,8 +467,11 @@ class GridFocusManager(
         // Find item at this position if any
         val item = findItemAt(validRow, validCol)
         focusedPosition = if (item != null) items.indexOf(item) else POSITION_NONE
-        
+
         Log.d(TAG, "Grid focus changed from ($oldRow, $oldCol) to ($validRow, $validCol)")
+        if (oldPosition != focusedPosition) {
+            focusChangeListener?.onFocusChanged(oldPosition, focusedPosition, item)
+        }
         focusChangeListener?.onGridFocusChanged(oldRow, oldCol, validRow, validCol, item)
         
         // Restart the focus timeout timer

@@ -24,7 +24,7 @@ object HiddenModeStateManager {
     private const val TAG = "HiddenModeStateManager"
     private const val TOGGLE_COOLDOWN_MS = 700L
     private const val BOOT_CLOSE_APPS_GUARD_MS = 30_000L
-    private const val ENABLE_TOUCH_OVERLAY_BLOCKING = false
+    private const val ENABLE_TOUCH_OVERLAY_BLOCKING = true
     private const val PREF_PREVIOUS_DND_FILTER = "hidden_mode_previous_dnd_filter"
     private const val PREF_DND_CHANGED_BY_LAUNCHER = "hidden_mode_dnd_changed_by_launcher"
     private const val PREF_APPS_HIDDEN_CHANGED_AT = "apps_hidden_changed_at"
@@ -165,7 +165,6 @@ object HiddenModeStateManager {
             if (shouldBlockTouch) {
                 if (ENABLE_TOUCH_OVERLAY_BLOCKING) {
                     safely("request keyboard-safe touch block") { requestAccessibilityTouchBlock(context) }
-                    safely("start touch block service") { startTouchBlockService(context) }
                 } else {
                     // On Qin/MTK a TYPE_ACCESSIBILITY_OVERLAY marked NOT_FOCUSABLE
                     // still captures most keypad events from applications below it.
@@ -521,6 +520,11 @@ object HiddenModeStateManager {
     private fun requestAccessibilityTouchBlock(context: Context) {
         Log.d(TAG, "Requesting keyboard-safe touch block")
 
+        SystemBlockAccessibilityService.instance?.let { service ->
+            service.setTouchBlockingEnabled(true)
+            return
+        }
+
         val accessibilityIntent = Intent(context, SystemBlockAccessibilityService::class.java).apply {
             action = SystemBlockAccessibilityService.ACTION_BLOCK_TOUCHES
         }
@@ -529,6 +533,11 @@ object HiddenModeStateManager {
     
     private fun requestAccessibilityTouchUnblock(context: Context) {
         Log.d(TAG, "Requesting keyboard-safe touch unblock")
+
+        SystemBlockAccessibilityService.instance?.let { service ->
+            service.setTouchBlockingEnabled(false)
+            return
+        }
 
         val accessibilityIntent = Intent(context, SystemBlockAccessibilityService::class.java).apply {
             action = SystemBlockAccessibilityService.ACTION_UNBLOCK_TOUCHES

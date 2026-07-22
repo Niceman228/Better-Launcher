@@ -159,8 +159,13 @@ class AppListActivity : AppCompatActivity() {
             viewModel.saveSelectedAppsAsHidden()
             
             // Go to our home screen activity directly
-            val intent = Intent(this, HomeScreenActivity::class.java)
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            val intent = Intent(Intent.ACTION_MAIN).apply {
+                setClass(this@AppListActivity, HomeScreenActivity::class.java)
+                addCategory(Intent.CATEGORY_HOME)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
             startActivity(intent)
             finish()
         }

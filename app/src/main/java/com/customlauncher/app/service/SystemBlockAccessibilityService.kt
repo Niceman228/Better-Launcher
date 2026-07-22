@@ -42,9 +42,9 @@ class SystemBlockAccessibilityService : AccessibilityService() {
         private const val KEYGUARD_CHECK_DELAY = 50L
         private const val OVERLAY_RETRY_DELAY_MS = 1_000L
         private const val OVERLAY_MAX_RETRIES = 3
-        // Qin F22 routes most keypad events to a full-screen accessibility
-        // overlay even when FLAG_NOT_FOCUSABLE is set.
-        private const val ENABLE_TOUCH_BLOCKING_OVERLAY = false
+        // TYPE_ACCESSIBILITY_OVERLAY with FLAG_NOT_FOCUSABLE blocks touch while
+        // keeping the physical keypad available for leaving hidden mode.
+        private const val ENABLE_TOUCH_BLOCKING_OVERLAY = true
     }
     
     // For key combination detection
@@ -393,7 +393,15 @@ class SystemBlockAccessibilityService : AccessibilityService() {
         
         return super.onStartCommand(intent, flags, startId)
     }
-    
+
+    /** Called directly when the system-bound accessibility service is alive. */
+    fun setTouchBlockingEnabled(enabled: Boolean) {
+        keyPressHandler.post {
+            if (enabled) enableTouchBlocking() else disableTouchBlocking()
+            setupCustomKeyListener()
+        }
+    }
+
     private fun enableTouchBlocking() {
         try {
             Log.d(TAG, "Enabling touch blocking...")

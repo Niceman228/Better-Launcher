@@ -50,6 +50,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
     companion object {
         private const val TAG = "AppDrawerBottomSheet"
         private const val FOCUS_TIMEOUT_MS = 10000L // 10 seconds
+        private const val ENTER_ANIMATION_MS = 180L
     }
 
     private lateinit var binding: BottomSheetAppDrawerBinding
@@ -159,8 +160,11 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
         
         // Configure window for proper transparency
         dialog.window?.let { window ->
+            // Material's slide/scale window animation produces 700-1600 ms frames
+            // on PowerVR GE8100. Content appears immediately instead.
+            window.setWindowAnimations(0)
             // Keep dim but make it more subtle
-            window.setDimAmount(0.5f)
+            window.setDimAmount(0.25f)
             // Set transparent background to see our custom rounded background
             window.setBackgroundDrawableResource(android.R.color.transparent)
             window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
@@ -340,6 +344,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
         setupRecyclerView()
         setupListeners()
         observeViewModel()
+        runLightweightEnterAnimation()
         
         // Setup D-pad navigation for both touch and button modes (for keyboard users)
         setupDpadNavigation()
@@ -373,6 +378,27 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
             requireContext().registerReceiver(closeDrawerReceiver, closeDrawerFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             requireContext().registerReceiver(closeDrawerReceiver, closeDrawerFilter)
+        }
+    }
+
+    /**
+     * One RenderNode translation only: no alpha blending, scaling, spring physics
+     * or layout on every frame. A short distance is enough to read as a bottom
+     * entrance on the 640px Qin display without stressing PowerVR GE8100.
+     */
+    private fun runLightweightEnterAnimation() {
+        val root = binding.root
+        val distance = (96f * resources.displayMetrics.density)
+            .coerceAtMost(resources.displayMetrics.heightPixels * 0.25f)
+        root.animate().cancel()
+        root.translationY = distance
+        root.post {
+            if (!isAdded || view == null) return@post
+            root.animate()
+                .translationY(0f)
+                .setDuration(ENTER_ANIMATION_MS)
+                .setInterpolator(android.view.animation.DecelerateInterpolator(1.5f))
+                .start()
         }
     }
 
@@ -542,7 +568,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                 Log.d(TAG, "Updating with visible apps: ${visibleApps.size}")
                 // Используем callback для плавной анимации
                 appAdapter.submitList(visibleApps) {
-                    // Список обновлен
+                    appAdapter.setSelectedPosition(focusedPosition.coerceAtLeast(0))
                     Log.d(TAG, "Visible apps list updated with animation")
                 }
             }
@@ -553,7 +579,7 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
                 Log.d(TAG, "Updating with all apps: ${apps.size}")
                 // Используем callback для плавной анимации
                 appAdapter.submitList(apps) {
-                    // Список обновлен
+                    appAdapter.setSelectedPosition(focusedPosition.coerceAtLeast(0))
                     Log.d(TAG, "All apps list updated with animation")
                 }
             }
@@ -1124,6 +1150,8 @@ class AppDrawerBottomSheet : BottomSheetDialogFragment() {
 
 
     override fun onDestroyView() {
+        binding.root.animate().cancel()
+        binding.root.translationY = 0f
         super.onDestroyView()
         currentPopupWindow?.dismiss()
         

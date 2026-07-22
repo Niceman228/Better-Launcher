@@ -40,6 +40,10 @@ class AppGridAdapter(
     private val isDragEnabled: Boolean = false,
     private val onDragStarted: (() -> Unit)? = null
 ) : ListAdapter<AppInfo, AppGridAdapter.ViewHolder>(AppDiffCallback()) {
+
+    init {
+        setHasStableIds(true)
+    }
     
     companion object {
         private const val PAYLOAD_SELECTION = "selection"
@@ -125,6 +129,11 @@ class AppGridAdapter(
         attachedRecyclerView = null
         // Cancel all coroutines when adapter is detached
         adapterScope.cancel()
+    }
+
+    override fun getItemId(position: Int): Long {
+        val app = getItem(position)
+        return (app.packageName + '|' + (app.componentName ?: "")).hashCode().toLong()
     }
 
     override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
@@ -307,9 +316,10 @@ class AppGridAdapter(
         
         fun applySelection(selected: Boolean) {
             itemView.isSelected = selected
-            val scale = if (selected) 1.05f else 1.0f
-            itemView.scaleX = scale
-            itemView.scaleY = scale
+            // Scaling overlaps adjacent cells on the 480px F22 display and looks
+            // like a second selector. The drawable already provides the highlight.
+            itemView.scaleX = 1f
+            itemView.scaleY = 1f
         }
 
         fun cancelIconLoad() {
@@ -393,10 +403,13 @@ class AppGridAdapter(
 
     // Override submitList to store full list
     override fun submitList(list: List<AppInfo>?) {
+        submitList(list, null)
+    }
+
+    override fun submitList(list: List<AppInfo>?, commitCallback: Runnable?) {
         fullAppsList = list ?: emptyList()
-        // Настройки сетки/подписей могли измениться — пересчитаем при следующем bind
         cachedLayout = null
-        applyFilter()
+        applyFilter(commitCallback)
     }
     
     // Get item at specific position
@@ -415,7 +428,7 @@ class AppGridAdapter(
     }
     
     // Apply filter to the list
-    fun applyFilter() {
+    fun applyFilter(commitCallback: Runnable? = null) {
         val filteredList = if (currentFilter.isEmpty()) {
             fullAppsList
         } else {
@@ -424,7 +437,7 @@ class AppGridAdapter(
                 app.packageName.contains(currentFilter, ignoreCase = true)
             }
         }
-        super.submitList(filteredList)
+        super.submitList(filteredList, commitCallback)
     }
     
     private class AppDiffCallback : DiffUtil.ItemCallback<AppInfo>() {

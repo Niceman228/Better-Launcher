@@ -287,6 +287,23 @@ class HomeScreenActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Older builds could place this activity in a normal application task.
+        // A default launcher must live in the HOME task; otherwise every Home
+        // press leaves another Activity/ViewRoot resident in this tiny process.
+        val launchedAsHome = intent?.action == Intent.ACTION_MAIN &&
+                intent?.categories?.contains(Intent.CATEGORY_HOME) == true
+        if (!launchedAsHome && isDefaultLauncher()) {
+            startActivity(Intent(Intent.ACTION_MAIN).apply {
+                setClass(this@HomeScreenActivity, HomeScreenActivity::class.java)
+                addCategory(Intent.CATEGORY_HOME)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+            })
+            finishAndRemoveTask()
+            return
+        }
+
         // A drawer sheet restored from a previous activity instance is always a ghost
         // (see AppDrawerBottomSheet.onCreate). Drop it before anything else runs.
         (supportFragmentManager.findFragmentByTag("AppDrawerBottomSheet")
@@ -1051,6 +1068,9 @@ class HomeScreenActivity : AppCompatActivity() {
                         previousHiddenState = currentHiddenState
                         // Update focus manager with items
                         focusManager.updateItems(gridItems)
+                        if (modeManager.isButtonMode() && !focusManager.hasFocus()) {
+                            focusManager.requestInitialFocus()
+                        }
                     }
                 }
             } finally {
